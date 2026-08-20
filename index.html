@@ -152,13 +152,28 @@
         };
 
         // ============================================================================
-        // PROCEDURAL CITY GENERATION
+        // CHUNK-BASED PROCEDURAL CITY GENERATION
         // ============================================================================
-        function generateCity() {
+        const CHUNK_SIZE = 8;  // 8x8 grid of buildings per chunk
+        const CHUNK_LOAD_DISTANCE = 2;  // Load chunks 2 chunks away
+        const buildingChunks = new Map();  // Map: "x,z" -> array of buildings
+        let activeChunks = new Set();
+        
+        function generateBuildingsForChunk(chunkX, chunkZ) {
             const buildings = [];
-            for (let x = -CITY.gridSize; x <= CITY.gridSize; x++) {
-                for (let z = -CITY.gridSize; z <= CITY.gridSize; z++) {
+            const key = `${chunkX},${chunkZ}`;
+            
+            if (buildingChunks.has(key)) {
+                return buildingChunks.get(key);
+            }
+            
+            // Generate buildings in this chunk
+            for (let localX = 0; localX < CHUNK_SIZE; localX++) {
+                for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
                     if (Math.random() < CITY.buildingDensity) {
+                        const worldX = (chunkX * CHUNK_SIZE + localX) - (CITY.gridSize / 2);
+                        const worldZ = (chunkZ * CHUNK_SIZE + localZ) - (CITY.gridSize / 2);
+                        
                         const height = CITY.minHeight + Math.random() * (CITY.maxHeight - CITY.minHeight);
                         const building = new THREE.Mesh(
                             new THREE.BoxGeometry(CITY.buildingSize, height, CITY.buildingSize),
@@ -169,41 +184,87 @@
                                 emissive: new THREE.Color(0x001100)
                             })
                         );
-                        building.position.set(x * 3, height / 2, z * 3);
+                        building.position.set(worldX * 3, height / 2, worldZ * 3);
                         building.castShadow = true;
                         building.receiveShadow = true;
-                        scene.add(building);
+                        building.userData.chunkKey = key;
                         buildings.push(building);
                     }
                 }
             }
-
-            // Ground plane
-            const ground = new THREE.Mesh(
-                new THREE.PlaneGeometry(200, 200),
-                new THREE.MeshStandardMaterial({
-                    color: 0x2d5016,
-                    metalness: 0,
-                    roughness: 0.9
-                })
-            );
-            ground.rotation.x = -Math.PI / 2;
-            ground.receiveShadow = true;
-            scene.add(ground);
-
-            // Sky dome
-            const skyGeometry = new THREE.SphereGeometry(300, 32, 32);
-            const skyMaterial = new THREE.MeshBasicMaterial({
-                color: 0x87ceeb,
-                side: THREE.BackSide
-            });
-            const skyMesh = new THREE.Mesh(skyGeometry, skyMaterial);
-            scene.add(skyMesh);
-
+            
+            buildingChunks.set(key, buildings);
             return buildings;
         }
+        
+        function updateChunks() {
+            // Get player chunk coordinates
+            const playerChunkX = Math.floor(playerState.position.x / (CHUNK_SIZE * 3));
+            const playerChunkZ = Math.floor(playerState.position.z / (CHUNK_SIZE * 3));
+            
+            const newActiveChunks = new Set();
+            
+            // Load chunks within distance
+            for (let cx = playerChunkX - CHUNK_LOAD_DISTANCE; cx <= playerChunkX + CHUNK_LOAD_DISTANCE; cx++) {
+                for (let cz = playerChunkZ - CHUNK_LOAD_DISTANCE; cz <= playerChunkZ + CHUNK_LOAD_DISTANCE; cz++) {
+                    const key = `${cx},${cz}`;
+                    newActiveChunks.add(key);
+                    
+                    if (!activeChunks.has(key)) {
+                        // Load this chunk
+                        const buildings = generateBuildingsForChunk(cx, cz);
+                        buildings.forEach(b => scene.add(b));
+                    }
+                }
+            }
+            
+            // Unload chunks outside distance
+            for (const key of activeChunks) {
+                if (!newActiveChunks.has(key)) {
+                    // Unload this chunk
+                    const buildings = buildingChunks.get(key);
+                    if (buildings) {
+                        buildings.forEach(b => scene.remove(b));
+                    }
+                }
+            }
+            
+            activeChunks = newActiveChunks;
+        }
+        
+        // Initialize ground and sky
+        const ground = new THREE.Mesh(
+            new THREE.PlaneGeometry(400, 400),
+            new THREE.MeshStandardMaterial({
+                color: 0x2d5016,
+                metalness: 0,
+                roughness: 0.9
+            })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
 
-        const buildings = generateCity();
+        const skyGeometry = new THREE.SphereGeometry(400, 32, 32);
+        const skyMaterial = new THREE.MeshBasicMaterial({
+            color: 0x87ceeb,
+            side: THREE.BackSide
+        });
+        const skyMesh = new THREE.Mesh(skyGeometry, skyMaterial);
+        scene.add(skyMesh);
+        
+        // Load initial chunks
+        updateChunks();
+        
+        // Helper to get all active buildings for raycasting
+        function getActiveBuildings() {
+            const buildings = [];
+            for (const key of activeChunks) {
+                const chunk = buildingChunks.get(key);
+                if (chunk) buildings.push(...chunk);
+            }
+            return buildings;
+        }
 
         // ============================================================================
         // RAYCASTER FOR CONTROLLER INPUT
@@ -367,9 +428,21 @@
         // XR SESSION & CONTROLLER HANDLING
         // ============================================================================
         let xrSession = null;
+        let xrFrame = null;
+        let xrReferenceSpace = null;
         let leftController = null;
         let rightController = null;
         let inputSources = {};
+        
+        // Controller pose tracking
+        const controllerPoses = {
+            left: new THREE.Vector3(),
+            right: new THREE.Vector3()
+        };
+        const controllerVisuals = {
+            left: null,
+            right: null
+        };
 
         async function onSessionStarted(session) {
             xrSession = session;
@@ -379,9 +452,9 @@
             const xrWebGLLayer = new XRWebGLLayer(session, gl);
             await session.updateRenderState({ baseLayer: xrWebGLLayer });
 
-            const space = await session.requestReferenceSpace('local');
+            xrReferenceSpace = await session.requestReferenceSpace('local');
             renderer.xr.setSession(session);
-            renderer.xr.setReferenceSpace(space);
+            renderer.xr.setReferenceSpace(xrReferenceSpace);
 
             // Reset player state for VR session
             playerState.position.set(0, 12, 0);
@@ -389,6 +462,23 @@
             playerState.prevPosition.set(0, 12, 0);
             playerState.leftActive = false;
             playerState.rightActive = false;
+
+            // Create visual controller spheres (debug hands)
+            const controllerGeometry = new THREE.SphereGeometry(0.3, 16, 16);
+            const controllerMaterial = new THREE.MeshStandardMaterial({
+                color: 0x00ff00,
+                emissive: 0x00aa00,
+                metalness: 0.3,
+                roughness: 0.4
+            });
+            
+            controllerVisuals.left = new THREE.Mesh(controllerGeometry, controllerMaterial.clone());
+            controllerVisuals.left.userData.name = 'leftController';
+            scene.add(controllerVisuals.left);
+            
+            controllerVisuals.right = new THREE.Mesh(controllerGeometry, controllerMaterial.clone());
+            controllerVisuals.right.userData.name = 'rightController';
+            scene.add(controllerVisuals.right);
 
             // Controller setup
             leftController = session.inputSources[0];
@@ -402,12 +492,25 @@
             session.addEventListener('squeezestart', onControllerSqueezeStart);
             session.addEventListener('squeezeend', onControllerSqueezeEnd);
 
-            updateHUD('VR Active');
+            updateHUD('VR Active - Controllers Ready');
         }
 
         function onSessionEnded() {
             xrSession = null;
-            updateHUD('VR Ended');
+            xrFrame = null;
+            xrReferenceSpace = null;
+            
+            // Clean up controller visuals
+            if (controllerVisuals.left) {
+                scene.remove(controllerVisuals.left);
+                controllerVisuals.left = null;
+            }
+            if (controllerVisuals.right) {
+                scene.remove(controllerVisuals.right);
+                controllerVisuals.right = null;
+            }
+            
+            updateHUD('VR Ended - Desktop Mode');
         }
 
         function onInputSourcesChange(event) {
@@ -421,21 +524,39 @@
 
         function onControllerSelectStart(event) {
             const inputSource = event.inputSource;
-            if (!inputSource.gamepad) return;
-
             const isLeft = inputSource.handedness === 'left';
             const hand = isLeft ? 'left' : 'right';
 
-            // Raycast from controller
-            // In WebXR, we need to get the controller pose from the XR frame
-            // For now, we'll use a simplified approach by casting from player head forward
-            
-            const rayOrigin = playerState.position.clone();
+            // Raycast from actual controller position
+            const controllerPos = isLeft ? controllerPoses.left : controllerPoses.right;
+            const rayOrigin = controllerPos.clone();
             const rayDirection = new THREE.Vector3(0, 0, -1);
             
-            // In full VR implementation, this would use controller pose space
+            // Get camera direction for more accurate ray (forward from controller)
+            if (xrFrame) {
+                const pose = xrFrame.getViewerPose(xrReferenceSpace);
+                if (pose && pose.views[0]) {
+                    const view = pose.views[0];
+                    // Extract forward vector from camera matrix
+                    rayDirection.set(0, 0, -1).applyMatrix4(
+                        new THREE.Matrix4().makeRotationFromQuaternion(
+                            new THREE.Quaternion().setFromRotationMatrix(
+                                new THREE.Matrix4().extractRotation(
+                                    new THREE.Matrix4().compose(
+                                        new THREE.Vector3().setFromMatrixPosition(view.transform.matrix),
+                                        new THREE.Quaternion(),
+                                        new THREE.Vector3(1, 1, 1)
+                                    )
+                                )
+                            )
+                        )
+                    );
+                }
+            }
+            
+            const activeBuildings = getActiveBuildings();
             raycaster.set(rayOrigin, rayDirection);
-            const intersects = raycaster.intersectObjects(buildings);
+            const intersects = raycaster.intersectObjects(activeBuildings);
 
             if (intersects.length > 0) {
                 const hitPoint = intersects[0].point;
@@ -499,9 +620,10 @@
             if (e.key === ' ') {
                 // Space: trigger left grapple
                 const rayOrigin = playerState.position.clone();
-                const rayDirection = new THREE.Vector3(0, 0, -1);
+                const rayDirection = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), desktopCameraAngle.y);
                 raycaster.set(rayOrigin, rayDirection);
-                const intersects = raycaster.intersectObjects(buildings);
+                const activeBuildings = getActiveBuildings();
+                const intersects = raycaster.intersectObjects(activeBuildings);
 
                 if (intersects.length > 0) {
                     const hitPoint = intersects[0].point;
@@ -515,9 +637,10 @@
             if (e.key === 'Enter') {
                 // Enter: trigger right grapple
                 const rayOrigin = playerState.position.clone();
-                const rayDirection = new THREE.Vector3(0, 0, -1);
+                const rayDirection = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), desktopCameraAngle.y);
                 raycaster.set(rayOrigin, rayDirection);
-                const intersects = raycaster.intersectObjects(buildings);
+                const activeBuildings = getActiveBuildings();
+                const intersects = raycaster.intersectObjects(activeBuildings);
 
                 if (intersects.length > 0) {
                     const hitPoint = intersects[0].point;
@@ -578,6 +701,9 @@
             const deltaTime = (now - lastFrameTime) / 1000;
             lastFrameTime = now;
 
+            // Store current XR frame for controller pose queries
+            xrFrame = frame;
+
             // Physics simulation (capped at 120 Hz for stability)
             const maxPhysicsSteps = 2;
             let timeAccumulator = deltaTime;
@@ -586,6 +712,35 @@
             while (timeAccumulator > 0 && maxPhysicsSteps > 0) {
                 physicsStep(Math.min(timeAccumulator, fixedTimeStep));
                 timeAccumulator -= fixedTimeStep;
+            }
+
+            // Update dynamic chunk loading
+            updateChunks();
+
+            // Update controller poses from XR frame
+            if (frame && frame.session && xrReferenceSpace) {
+                const pose = frame.getViewerPose(xrReferenceSpace);
+                if (pose) {
+                    // Update left and right controller poses
+                    for (const inputSource of frame.session.inputSources) {
+                        if (inputSource.gripSpace) {
+                            const gripPose = frame.getPose(inputSource.gripSpace, xrReferenceSpace);
+                            if (gripPose) {
+                                const pos = new THREE.Vector3().setFromMatrixPosition(
+                                    new THREE.Matrix4().fromArray(gripPose.transform.matrix)
+                                );
+                                
+                                if (inputSource.handedness === 'left') {
+                                    controllerPoses.left.copy(pos);
+                                    if (controllerVisuals.left) controllerVisuals.left.position.copy(pos);
+                                } else if (inputSource.handedness === 'right') {
+                                    controllerPoses.right.copy(pos);
+                                    if (controllerVisuals.right) controllerVisuals.right.position.copy(pos);
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Update camera position
