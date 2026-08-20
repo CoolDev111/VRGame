@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebXR Grappling Hook Game</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: 'Arial', sans-serif;
+        }
+        #canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #0f0;
+            font-size: 14px;
+            font-family: monospace;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 10px;
+            border: 2px solid #0f0;
+            max-width: 300px;
+            z-index: 100;
+        }
+        #vr-button {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 24px;
+            font-size: 16px;
+            background: #0066cc;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            z-index: 101;
+        }
+        #vr-button:hover {
+            background: #0052a3;
+        }
+        #vr-button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="hud">
+        <div>Status: <span id="status">Initializing...</span></div>
+        <div>L Grapple: <span id="l-grapple">Inactive</span></div>
+        <div>R Grapple: <span id="r-grapple">Inactive</span></div>
+        <div>Velocity: <span id="velocity">0.0 m/s</span></div>
+        <div>Height: <span id="height">0.0 m</span></div>
+    </div>
+    <button id="vr-button">Enter VR</button>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // ============================================================================
+        // CONSTANTS & PHYSICS PARAMETERS
+        // ============================================================================
+        const PHYSICS = {
+            gravity: new THREE.Vector3(0, -9.81, 0),
+            springK: 500,      // Spring constant
+            damping: 10,        // Damping coefficient
+            playerMass: 1,      // Player mass (unity)
+            yankBoostScale: 0.3, // Yank boost multiplier
+            yankVelocityThreshold: 2.0, // m/s to trigger boost
+            yankCooldown: 0.25, // Seconds between yanks per hand
+            reelInRate: 3.0,    // Meters per second (reel in speed)
+            ropeMinLength: 0.5  // Minimum rope length
+        };
+
+        const CITY = {
+            gridSize: 20,
+            buildingDensity: 0.7,
+            minHeight: 10,
+            maxHeight: 60,
+            buildingSize: 2
+        };
+
+        // ============================================================================
+        // SCENE SETUP
+        // ============================================================================
+        const canvas = document.getElementById('canvas');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb);
+        scene.fog = new THREE.Fog(0x87ceeb, 100, 300);
+
+        const camera = new THREE.PerspectiveCamera(75, canvas.clientWidth / canvas.clientHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+        renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+        renderer.setPixelRatio(Math.min(2, window.devicePixelRatio)); // Cap at 2x for performance
+        renderer.xr.enabled = true;
+
+        // ============================================================================
+        // LIGHTING
+        // ============================================================================
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(50, 50, 50);
+        directionalLight.castShadow = true;
+        directionalLight.shadow.mapSize.width = 2048;
+        directionalLight.shadow.mapSize.height = 2048;
+        directionalLight.shadow.camera.far = 200;
+        directionalLight.shadow.camera.left = -100;
+        directionalLight.shadow.camera.right = 100;
+        directionalLight.shadow.camera.top = 100;
+        directionalLight.shadow.camera.bottom = -100;
+        scene.add(directionalLight);
+
+        // ============================================================================
+        // PLAYER STATE
+        // ============================================================================
+        const playerState = {
+            position: new THREE.Vector3(0, 12, 0),
+            velocity: new THREE.Vector3(0, 0, 0),
+            
+            // Left hand
+            leftActive: false,
+            leftAnchor: new THREE.Vector3(),
+            leftRopeLength: 0,
+            leftPrevY: 0,
+            leftYankCooldown: 0,
+            leftReeling: false,
+            
+            // Right hand
+            rightActive: false,
+            rightAnchor: new THREE.Vector3(),
+            rightRopeLength: 0,
+            rightPrevY: 0,
+            rightYankCooldown: 0,
+            rightReeling: false,
+
+            // Motion smoothing (anti-motion sickness)
+            prevPosition: new THREE.Vector3(0, 12, 0),
+            velocitySmoothing: 0.85,
+            
+            // Collision properties
+            collisionRadius: 0.5  // Sphere radius for ground collision
+        };
+
+        // ============================================================================
+        // PROCEDURAL CITY GENERATION
+        // ============================================================================
+        function generateCity() {
+            const buildings = [];
+            for (let x = -CITY.gridSize; x <= CITY.gridSize; x++) {
+                for (let z = -CITY.gridSize; z <= CITY.gridSize; z++) {
+                    if (Math.random() < CITY.buildingDensity) {
+                        const height = CITY.minHeight + Math.random() * (CITY.maxHeight - CITY.minHeight);
+                        const building = new THREE.Mesh(
+                            new THREE.BoxGeometry(CITY.buildingSize, height, CITY.buildingSize),
+                            new THREE.MeshStandardMaterial({
+                                color: new THREE.Color().setHSL(0.6, 0.3, 0.4),
+                                metalness: 0.2,
+                                roughness: 0.8,
+                                emissive: new THREE.Color(0x001100)
+                            })
+                        );
+                        building.position.set(x * 3, height / 2, z * 3);
+                        building.castShadow = true;
+                        building.receiveShadow = true;
+                        scene.add(building);
+                        buildings.push(building);
+                    }
+                }
+            }
+
+            // Ground plane
+            const ground = new THREE.Mesh(
+                new THREE.PlaneGeometry(200, 200),
+                new THREE.MeshStandardMaterial({
+                    color: 0x2d5016,
+                    metalness: 0,
+                    roughness: 0.9
+                })
+            );
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // Sky dome
+            const skyGeometry = new THREE.SphereGeometry(300, 32, 32);
+            const skyMaterial = new THREE.MeshBasicMaterial({
+                color: 0x87ceeb,
+                side: THREE.BackSide
+            });
+            const skyMesh = new THREE.Mesh(skyGeometry, skyMaterial);
+            scene.add(skyMesh);
+
+            return buildings;
+        }
+
+        const buildings = generateCity();
+
+        // ============================================================================
+        // RAYCASTER FOR CONTROLLER INPUT
+        // ============================================================================
+        const raycaster = new THREE.Raycaster();
+
+        function raycastFromController(controller) {
+            const rayOrigin = new THREE.Vector3();
+            const rayDirection = new THREE.Vector3(0, 0, -1);
+            
+            rayOrigin.setFromMatrixPosition(controller.matrixWorld);
+            rayDirection.applyMatrix4(controller.matrixWorld).sub(rayOrigin).normalize();
+            
+            raycaster.set(rayOrigin, rayDirection);
+            const intersects = raycaster.intersectObjects(buildings);
+            
+            if (intersects.length > 0) {
+                return {
+                    point: intersects[0].point,
+                    distance: intersects[0].distance
+                };
+            }
+            return null;
+        }
+
+        // ============================================================================
+        // PHYSICS SIMULATION
+        // ============================================================================
+        function physicsStep(dt) {
+            // Clamp dt to prevent instability
+            dt = Math.min(dt, 0.016);
+
+            const p = playerState.position;
+            const v = playerState.velocity;
+
+            // Calculate tension for left hand
+            let T_left = new THREE.Vector3(0, 0, 0);
+            if (playerState.leftActive) {
+                const d_vec = new THREE.Vector3().subVectors(p, playerState.leftAnchor);
+                const d_mag = d_vec.length();
+
+                if (d_mag > playerState.leftRopeLength) {
+                    const u_dir = d_vec.normalize();
+                    const velocityAlongRope = v.dot(u_dir);
+                    
+                    T_left.copy(u_dir).multiplyScalar(
+                        -(PHYSICS.springK * (d_mag - playerState.leftRopeLength) + 
+                          PHYSICS.damping * velocityAlongRope)
+                    );
+                }
+            }
+
+            // Calculate tension for right hand
+            let T_right = new THREE.Vector3(0, 0, 0);
+            if (playerState.rightActive) {
+                const d_vec = new THREE.Vector3().subVectors(p, playerState.rightAnchor);
+                const d_mag = d_vec.length();
+
+                if (d_mag > playerState.rightRopeLength) {
+                    const u_dir = d_vec.normalize();
+                    const velocityAlongRope = v.dot(u_dir);
+                    
+                    T_right.copy(u_dir).multiplyScalar(
+                        -(PHYSICS.springK * (d_mag - playerState.rightRopeLength) + 
+                          PHYSICS.damping * velocityAlongRope)
+                    );
+                }
+            }
+
+            // Total tension
+            const T_total = new THREE.Vector3().addVectors(T_left, T_right);
+
+            // Yank boost calculation
+            let v_boost = new THREE.Vector3(0, 0, 0);
+
+            // Left hand yank
+            if (playerState.leftActive && playerState.leftYankCooldown <= 0) {
+                const v_yank = (playerState.leftPrevY - p.y) / dt;
+                if (v_yank > PHYSICS.yankVelocityThreshold) {
+                    const d_vec = new THREE.Vector3().subVectors(p, playerState.leftAnchor);
+                    const u_dir = d_vec.normalize();
+                    v_boost.addScaledVector(u_dir, -PHYSICS.yankBoostScale * v_yank);
+                    playerState.leftYankCooldown = PHYSICS.yankCooldown;
+                }
+            }
+
+            // Right hand yank
+            if (playerState.rightActive && playerState.rightYankCooldown <= 0) {
+                const v_yank = (playerState.rightPrevY - p.y) / dt;
+                if (v_yank > PHYSICS.yankVelocityThreshold) {
+                    const d_vec = new THREE.Vector3().subVectors(p, playerState.rightAnchor);
+                    const u_dir = d_vec.normalize();
+                    v_boost.addScaledVector(u_dir, -PHYSICS.yankBoostScale * v_yank);
+                    playerState.rightYankCooldown = PHYSICS.yankCooldown;
+                }
+            }
+
+            // Velocity integration: v_new = v_current + (g + T_total/m) * dt + v_boost
+            v.addScaledVector(PHYSICS.gravity, dt);
+            v.addScaledVector(T_total, dt / PHYSICS.playerMass);
+            v.add(v_boost);
+
+            // Position integration: p_new = p_current + v * dt
+            p.addScaledVector(v, dt);
+
+            // Motion smoothing (anti-motion sickness)
+            const smoothedPos = new THREE.Vector3().lerpVectors(
+                playerState.prevPosition,
+                p,
+                1 - playerState.velocitySmoothing
+            );
+            p.copy(smoothedPos);
+            playerState.prevPosition.copy(p);
+
+            // Update cooldowns
+            if (playerState.leftYankCooldown > 0) playerState.leftYankCooldown -= dt;
+            if (playerState.rightYankCooldown > 0) playerState.rightYankCooldown -= dt;
+
+            // Store previous Y for yank calculation
+            playerState.leftPrevY = p.y;
+            playerState.rightPrevY = p.y;
+
+            // Reel in (reduce rope length)
+            if (playerState.leftActive && playerState.leftReeling) {
+                playerState.leftRopeLength = Math.max(
+                    PHYSICS.ropeMinLength,
+                    playerState.leftRopeLength - (PHYSICS.reelInRate * dt)
+                );
+            }
+
+            if (playerState.rightActive && playerState.rightReeling) {
+                playerState.rightRopeLength = Math.max(
+                    PHYSICS.ropeMinLength,
+                    playerState.rightRopeLength - (PHYSICS.reelInRate * dt)
+                );
+            }
+
+            // Ground collision (smooth sphere-ground interaction)
+            // Ground plane is at y = 0
+            const groundLevel = 0;
+            const playerRadius = playerState.collisionRadius;
+            
+            if (p.y - playerRadius < groundLevel) {
+                // Clamp position above ground
+                p.y = groundLevel + playerRadius;
+                
+                // Stop downward velocity (preserve upward momentum)
+                if (v.y < 0) {
+                    v.y = 0;
+                }
+            }
+            
+            // Safety net: if somehow fell to the void, respawn
+            if (p.y < -100) {
+                p.set(0, 12, 0);
+                v.set(0, 0, 0);
+            }
+        }
+
+        // ============================================================================
+        // XR SESSION & CONTROLLER HANDLING
+        // ============================================================================
+        let xrSession = null;
+        let leftController = null;
+        let rightController = null;
+        let inputSources = {};
+
+        async function onSessionStarted(session) {
+            xrSession = session;
+            session.addEventListener('end', onSessionEnded);
+
+            const gl = renderer.getContext();
+            const xrWebGLLayer = new XRWebGLLayer(session, gl);
+            await session.updateRenderState({ baseLayer: xrWebGLLayer });
+
+            const space = await session.requestReferenceSpace('local');
+            renderer.xr.setSession(session);
+            renderer.xr.setReferenceSpace(space);
+
+            // Reset player state for VR session
+            playerState.position.set(0, 12, 0);
+            playerState.velocity.set(0, 0, 0);
+            playerState.prevPosition.set(0, 12, 0);
+            playerState.leftActive = false;
+            playerState.rightActive = false;
+
+            // Controller setup
+            leftController = session.inputSources[0];
+            rightController = session.inputSources[1];
+
+            session.addEventListener('inputsourceschange', onInputSourcesChange);
+            session.addEventListener('select', onControllerSelect);
+            session.addEventListener('selectstart', onControllerSelectStart);
+            session.addEventListener('selectend', onControllerSelectEnd);
+            session.addEventListener('squeeze', onControllerSqueeze);
+            session.addEventListener('squeezestart', onControllerSqueezeStart);
+            session.addEventListener('squeezeend', onControllerSqueezeEnd);
+
+            updateHUD('VR Active');
+        }
+
+        function onSessionEnded() {
+            xrSession = null;
+            updateHUD('VR Ended');
+        }
+
+        function onInputSourcesChange(event) {
+            for (const inputSource of event.added) {
+                inputSources[inputSource.handedness] = inputSource;
+            }
+            for (const inputSource of event.removed) {
+                delete inputSources[inputSource.handedness];
+            }
+        }
+
+        function onControllerSelectStart(event) {
+            const inputSource = event.inputSource;
+            if (!inputSource.gamepad) return;
+
+            const isLeft = inputSource.handedness === 'left';
+            const hand = isLeft ? 'left' : 'right';
+
+            // Raycast from controller
+            // In WebXR, we need to get the controller pose from the XR frame
+            // For now, we'll use a simplified approach by casting from player head forward
+            
+            const rayOrigin = playerState.position.clone();
+            const rayDirection = new THREE.Vector3(0, 0, -1);
+            
+            // In full VR implementation, this would use controller pose space
+            raycaster.set(rayOrigin, rayDirection);
+            const intersects = raycaster.intersectObjects(buildings);
+
+            if (intersects.length > 0) {
+                const hitPoint = intersects[0].point;
+                const distance = playerState.position.distanceTo(hitPoint);
+
+                if (isLeft) {
+                    playerState.leftActive = true;
+                    playerState.leftAnchor.copy(hitPoint);
+                    playerState.leftRopeLength = distance;
+                    playerState.leftPrevY = playerState.position.y;
+                } else {
+                    playerState.rightActive = true;
+                    playerState.rightAnchor.copy(hitPoint);
+                    playerState.rightRopeLength = distance;
+                    playerState.rightPrevY = playerState.position.y;
+                }
+
+                updateHUD(`${hand} grappled at ${distance.toFixed(1)}m`);
+            }
+        }
+
+        function onControllerSelectEnd(event) {
+            const isLeft = event.inputSource.handedness === 'left';
+            if (isLeft) {
+                playerState.leftActive = false;
+            } else {
+                playerState.rightActive = false;
+            }
+        }
+
+        function onControllerSelect(event) {
+            // Trigger press (already handled by selectstart/end)
+        }
+
+        function onControllerSqueezeStart(event) {
+            const isLeft = event.inputSource.handedness === 'left';
+            if (isLeft) {
+                playerState.leftReeling = true;
+            } else {
+                playerState.rightReeling = true;
+            }
+        }
+
+        function onControllerSqueezeEnd(event) {
+            const isLeft = event.inputSource.handedness === 'left';
+            if (isLeft) {
+                playerState.leftReeling = false;
+            } else {
+                playerState.rightReeling = false;
+            }
+        }
+
+        // ============================================================================
+        // DESKTOP FALLBACK KEYBOARD CONTROLS
+        // ============================================================================
+        const keyState = {};
+
+        window.addEventListener('keydown', (e) => {
+            keyState[e.key.toLowerCase()] = true;
+
+            if (e.key === ' ') {
+                // Space: trigger left grapple
+                const rayOrigin = playerState.position.clone();
+                const rayDirection = new THREE.Vector3(0, 0, -1);
+                raycaster.set(rayOrigin, rayDirection);
+                const intersects = raycaster.intersectObjects(buildings);
+
+                if (intersects.length > 0) {
+                    const hitPoint = intersects[0].point;
+                    const distance = playerState.position.distanceTo(hitPoint);
+                    playerState.leftActive = true;
+                    playerState.leftAnchor.copy(hitPoint);
+                    playerState.leftRopeLength = distance;
+                }
+            }
+
+            if (e.key === 'Enter') {
+                // Enter: trigger right grapple
+                const rayOrigin = playerState.position.clone();
+                const rayDirection = new THREE.Vector3(0, 0, -1);
+                raycaster.set(rayOrigin, rayDirection);
+                const intersects = raycaster.intersectObjects(buildings);
+
+                if (intersects.length > 0) {
+                    const hitPoint = intersects[0].point;
+                    const distance = playerState.position.distanceTo(hitPoint);
+                    playerState.rightActive = true;
+                    playerState.rightAnchor.copy(hitPoint);
+                    playerState.rightRopeLength = distance;
+                }
+            }
+
+            if (e.key === 'q') playerState.leftReeling = true;
+            if (e.key === 'e') playerState.rightReeling = true;
+        });
+
+        window.addEventListener('keyup', (e) => {
+            keyState[e.key.toLowerCase()] = false;
+
+            if (e.key === ' ') playerState.leftActive = false;
+            if (e.key === 'Enter') playerState.rightActive = false;
+            if (e.key === 'q') playerState.leftReeling = false;
+            if (e.key === 'e') playerState.rightReeling = false;
+        });
+
+        // Desktop camera movement
+        let desktopCameraAngle = { x: 0, y: 0 };
+        window.addEventListener('mousemove', (e) => {
+            if (document.pointerLockElement) {
+                desktopCameraAngle.y += e.movementX * 0.005;
+                desktopCameraAngle.x += e.movementY * 0.005;
+                desktopCameraAngle.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, desktopCameraAngle.x));
+            }
+        });
+
+        canvas.addEventListener('click', () => {
+            canvas.requestPointerLock = canvas.requestPointerLock || canvas.mozRequestPointerLock;
+            canvas.requestPointerLock();
+        });
+
+        // ============================================================================
+        // HUD UPDATE
+        // ============================================================================
+        function updateHUD(status = null) {
+            if (status) document.getElementById('status').textContent = status;
+            document.getElementById('l-grapple').textContent = playerState.leftActive ? 'ACTIVE' : 'Inactive';
+            document.getElementById('r-grapple').textContent = playerState.rightActive ? 'ACTIVE' : 'Inactive';
+            
+            const speed = playerState.velocity.length();
+            document.getElementById('velocity').textContent = speed.toFixed(1);
+            document.getElementById('height').textContent = playerState.position.y.toFixed(1);
+        }
+
+        // ============================================================================
+        // RENDER LOOP
+        // ============================================================================
+        let lastFrameTime = performance.now();
+
+        function onAnimationFrame(now, frame) {
+            const deltaTime = (now - lastFrameTime) / 1000;
+            lastFrameTime = now;
+
+            // Physics simulation (capped at 120 Hz for stability)
+            const maxPhysicsSteps = 2;
+            let timeAccumulator = deltaTime;
+            const fixedTimeStep = 1 / 120;
+
+            while (timeAccumulator > 0 && maxPhysicsSteps > 0) {
+                physicsStep(Math.min(timeAccumulator, fixedTimeStep));
+                timeAccumulator -= fixedTimeStep;
+            }
+
+            // Update camera position
+            if (frame && frame.session && frame.session.inputSources) {
+                // WebXR: camera position is handled by xrSession
+            } else {
+                // Desktop fallback
+                camera.position.copy(playerState.position);
+                camera.rotation.order = 'YXZ';
+                camera.rotation.y = desktopCameraAngle.y;
+                camera.rotation.x = desktopCameraAngle.x;
+
+                // Desktop movement with direct velocity control
+                const moveSpeed = 10;
+                const moveDir = new THREE.Vector3();
+                if (keyState['w']) moveDir.z -= 1;
+                if (keyState['s']) moveDir.z += 1;
+                if (keyState['a']) moveDir.x -= 1;
+                if (keyState['d']) moveDir.x += 1;
+
+                if (moveDir.length() > 0) {
+                    // Input detected: set velocity directly (responsive feel)
+                    moveDir.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), desktopCameraAngle.y);
+                    playerState.velocity.x = moveDir.x * moveSpeed;
+                    playerState.velocity.z = moveDir.z * moveSpeed;
+                } else {
+                    // No input: apply friction to horizontal movement (smooth deceleration)
+                    playerState.velocity.x *= 0.88;
+                    playerState.velocity.z *= 0.88;
+                }
+                // Y velocity (gravity) is handled by physics simulation
+            }
+
+            // Render
+            renderer.render(scene, camera);
+
+            // Update HUD
+            updateHUD();
+        }
+
+        renderer.setAnimationLoop(onAnimationFrame);
+
+        // ============================================================================
+        // VR BUTTON
+        // ============================================================================
+        const vrButton = document.getElementById('vr-button');
+
+        async function requestXRSession() {
+            try {
+                const sessionInit = {
+                    requiredFeatures: ['local-floor'],
+                    optionalFeatures: ['hand-tracking', 'dom-overlay-for-handheld-ar']
+                };
+
+                const session = await navigator.xr.requestSession('immersive-vr', sessionInit);
+                await onSessionStarted(session);
+            } catch (err) {
+                console.error('XR session request failed:', err);
+                updateHUD('WebXR unavailable - use WASD + SPACE/ENTER');
+            }
+        }
+
+        vrButton.addEventListener('click', requestXRSession);
+
+        // Check XR support
+        async function checkXRSupport() {
+            if (!navigator.xr) {
+                vrButton.textContent = 'WebXR Not Supported';
+                vrButton.disabled = true;
+                updateHUD('No WebXR Support - Desktop Mode');
+                return;
+            }
+
+            try {
+                const isSupported = await navigator.xr.isSessionSupported('immersive-vr');
+                if (!isSupported) {
+                    vrButton.textContent = 'VR Not Available';
+                    vrButton.disabled = true;
+                    updateHUD('VR Unavailable - Desktop Mode');
+                }
+            } catch (err) {
+                // Permissions policy or browser restrictions
+                console.warn('XR support check failed:', err);
+                // Don't disable button; let user try anyway (may work on Quest)
+                vrButton.textContent = 'Enter VR (Quest)';
+                updateHUD('XR check blocked - try on headset');
+            }
+        }
+
+        checkXRSupport();
+
+        // ============================================================================
+        // WINDOW RESIZE
+        // ============================================================================
+        window.addEventListener('resize', () => {
+            camera.aspect = canvas.clientWidth / canvas.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+        });
+
+        // Update HUD on load
+        updateHUD('Ready - Click VR Button or Use Desktop Controls');
+    </script>
+</body>
+</html>
