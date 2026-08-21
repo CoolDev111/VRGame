@@ -38,6 +38,10 @@
     <div><span id="vel">0.0</span> m/s | <span id="alt">0.0</span> m</div>
 </div>
 <div id="controls-hint">Desktop: WASD + mouse look (click) | Space/Enter grapple | Q/E reel</div>
+<div id="loader" style="position:fixed;inset:0;background:#111122;display:flex;align-items:center;justify-content:center;z-index:999;flex-direction:column;gap:12px">
+    <div style="color:#0f0;font:16px monospace">LOADING</div>
+    <div style="color:#555;font:12px monospace" id="load-status">three.js...</div>
+</div>
 <button id="vr-button">Enter VR</button>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -71,7 +75,7 @@ const DEADZONE   = 0.15;
 const CHUNK_N    = 5;            // 5x5 buildings per chunk
 const SPACING    = 12;           // world units between centers
 const CHUNK_W    = CHUNK_N * SPACING;  // 60
-const LOAD_DIST  = 1;            // 3x3 grid = 9 chunks loaded
+let   LOAD_DIST  = 0;            // Start with just spawn chunk, expand after first frames
 const MAX_INST   = 200;          // max visible building instances
 const DENSITY    = 0.35;
 const MIN_H      = 8;
@@ -477,6 +481,7 @@ function updateHUD() {
 
 // ===== MAIN LOOP =====
 let lastT = performance.now();
+let warmFrames = 0;
 
 function animate(now, frame) {
     // NO requestAnimationFrame here! setAnimationLoop handles it.
@@ -495,6 +500,11 @@ function animate(now, frame) {
     const sdt = dt / steps;
     for (let i = 0; i < steps; i++) physics(sdt);
 
+    // Expand load radius after warmup
+    if (LOAD_DIST < 1) {
+        warmFrames++;
+        if (warmFrames > 30) LOAD_DIST = 1;
+    }
     // Chunks (only rebuild instances when dirty)
     updateChunks();
     if (chunksDirty) { rebuildInstances(); chunksDirty = false; }
@@ -612,7 +622,6 @@ async function requestVR() {
     try {
         const s = await navigator.xr.requestSession('immersive-vr', {
             requiredFeatures:['local-floor'],
-            optionalFeatures:['hand-tracking']
         });
         await startSession(s);
         vrBtn.textContent = 'Exit VR';
@@ -640,9 +649,11 @@ window.addEventListener('resize',()=>{
     renderer.setSize(window.innerWidth,window.innerHeight);
 });
 
-// Initial chunks
-updateChunks();
-rebuildInstances();
+// Defer chunk loading — first frame renders empty scene (instant VR entry)
+
+// Hide loader once Three.js is ready
+const loader = document.getElementById('loader');
+if(loader) loader.style.display = 'none';
 setStatus('Ready');
 </script>
 </body>
