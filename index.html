@@ -388,17 +388,19 @@ async function startSession(session) {
     isVR = true;
     session.addEventListener('end', endSession);
 
-    const gl = renderer.getContext();
-    const layer = new XRWebGLLayer(session, gl);
-    await session.updateRenderState({baseLayer:layer});
+    // FIX: Remove the manual XRWebGLLayer creation. 
+    // Let Three.js automatically handle makeXRCompatible() and the baseLayer.
+    renderer.xr.setSession(session);
+
     // Try local-floor first, fall back to viewer (some PCVR setups only support viewer)
     try {
         xrBaseSpace = await session.requestReferenceSpace('local-floor');
     } catch(_) {
         xrBaseSpace = await session.requestReferenceSpace('viewer');
     }
+    
+    // Pass the reference space to Three.js and keep a local copy for our custom grapple math
     renderer.xr.setReferenceSpace(xrBaseSpace);
-    renderer.xr.setSession(session);
 
     player.x=0; player.y=20; player.z=0;
     player.vx=player.vy=player.vz=0;
