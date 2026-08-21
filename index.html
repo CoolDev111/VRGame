@@ -113,12 +113,7 @@ scene.add(sun);
 
 // ===== INSTANCED MESH FOR ALL BUILDINGS =====
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-// FIX: Upgraded from Lambert to Standard material with metalness for a glossy, reflective city look
-const bldgMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff, 
-    roughness: 0.2, 
-    metalness: 0.6 
-});
+const bldgMat = new THREE.MeshLambertMaterial({color:0x445566});
 const bldgMesh = new THREE.InstancedMesh(boxGeo, bldgMat, MAX_INST);
 bldgMesh.count = 0;
 scene.add(bldgMesh);
@@ -227,7 +222,7 @@ function updateRope(line, active, anchor) {
     line.visible = true;
     const p = line.geometry.attributes.position.array;
     p[0]=player.x; p[1]=player.y; p[2]=player.z;
-    p[3]=anchor.x; p[4]=anchor.y; p[5]=anchor.z;
+    p[3]=anchor.ax; p[4]=anchor.ay; p[5]=anchor.az; // Fixed: referenced .ax/.ay/.az
     line.geometry.attributes.position.needsUpdate = true;
 }
 
@@ -573,24 +568,27 @@ function updateVR(frame, dt) {
             laser.visible = false; 
             
             // YANK-TO-BOOST MATH
-            // Calculate how fast the controller moved downward since last frame
-            const yankVel = (state.prevY - _v.y) / dt;
-            
-            // If pulled down faster than 1.5 m/s and cooldown is clear
-            if (yankVel > 1.5 && state.cd <= 0) {
-                const dx = state.ax - player.x;
-                const dy = state.ay - player.y;
-                const dz = state.az - player.z;
-                const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+            const currentY = _v.y;
+            if (c.userData.prevY !== undefined && state.active) {
+                const vYank = (c.userData.prevY - currentY) / dt; 
+                const now = performance.now();
                 
-                // Add velocity directly toward the anchor point
-                const boost = yankVel * 0.5; // Tunable boost multiplier
-                player.vx += (dx/dist) * boost;
-                player.vy += (dy/dist) * boost;
-                player.vz += (dz/dist) * boost;
-                
-                state.cd = 0.3; // Lock out for 0.3 seconds to prevent hyper-speed glitches
+                // Lowered threshold slightly to 1.5m/s and tuned cooldown
+                if (vYank > 1.5 && (now - (c.userData.lastYank || 0) > 250)) { 
+                    c.userData.lastYank = now;
+                    
+                    const dx = state.ax - player.x;
+                    const dy = state.ay - player.y;
+                    const dz = state.az - player.z;
+                    const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+                    
+                    const boost = vYank * 0.5; 
+                    player.vx += (dx/dist) * boost;
+                    player.vy += (dy/dist) * boost;
+                    player.vz += (dz/dist) * boost;
+                }
             }
+            c.userData.prevY = currentY;
         } else {
             laser.visible = true;
             const hit = grappleRay(_v.x, _v.y, _v.z, _v2.x, _v2.y, _v2.z);
@@ -626,8 +624,11 @@ function updateVR(frame, dt) {
                 const vp = frame.getViewerPose(xrBaseSpace);
                 if (vp && vp.views[0]) {
                     const vq = _q.setFromRotationMatrix(_m.fromArray(vp.views[0].transform.matrix));
-                    _v3.set(0,0,-1).applyQuaternion(vq);
-                    hfx = _v3.x; hfz = _v3.z;
+                    _v3.set(0, 0, -1).applyQuaternion(vq);
+                    _v3.y = 0; 
+                    _v3.normalize();
+                    hfx = _v3.x; 
+                    hfz = _v3.z;
                 }
                 const rx = -hfz, rz = hfx;
                 
