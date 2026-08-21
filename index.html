@@ -232,8 +232,8 @@
 
             // ===== PLAYER STATE =====
             const player = {x:0, y:20, z:0, vx:0, vy:0, vz:0};
-            const left  = {active:false, ax:0,ay:0,az:0, len:0, reel:false, prevY:0, cd:0};
-            const right = {active:false, ax:0,ay:0,az:0, len:0, reel:false, prevY:0, cd:0};
+            const left  = {active:false, ax:0,ay:0,az:0, len:0, reel:false, pullEnergy:0};
+            const right = {active:false, ax:0,ay:0,az:0, len:0, reel:false, pullEnergy:0};
 
             // ===== RAYCASTER =====
             const ray = new THREE.Raycaster();
@@ -354,6 +354,27 @@
                 if (hit) attachGrapple(isLeft, hit);
             }
 
+            function releaseGrapple(isL) {
+                const state = isL ? left : right;
+                
+                // If we accumulated pull energy while holding and yanking, launch the player!
+                if (state.active && state.pullEnergy > 0.3) {
+                    const dx = state.ax - player.x;
+                    const dy = state.ay - player.y;
+                    const dz = state.az - player.z;
+                    const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+                    
+                    // Convert accumulated pull energy into an explosive launch boost
+                    const boost = state.pullEnergy * 1.5;
+                    player.vx += (dx / dist) * boost;
+                    player.vy += (dy / dist) * boost + (state.pullEnergy * 0.5); // Extra upward pop
+                    player.vz += (dz / dist) * boost;
+                }
+                
+                state.active = false;
+                state.pullEnergy = 0; // Reset charge
+            }
+
             // ===== CONTROLLER VISUALS (Three.js Native) =====
             const ctrl0 = renderer.xr.getController(0);
             const ctrl1 = renderer.xr.getController(1);
@@ -393,7 +414,9 @@
                 _v2.set(0, 0, -1).transformDirection(this.matrixWorld);
                 tryGrapple(isL, _v.x, _v.y, _v.z, _v2.x, _v2.y, _v2.z);
             }
-            function onCtrlGrappleEnd() { (this.userData.handedness === 'left' ? left : right).active = false; }
+            function onCtrlGrappleEnd() { 
+                releaseGrapple(this.userData.handedness === 'left'); 
+            }
             function onCtrlReel() { (this.userData.handedness === 'left' ? left : right).reel = true; }
             function onCtrlReelEnd() { (this.userData.handedness === 'left' ? left : right).reel = false; }
 
@@ -459,11 +482,11 @@
                 if(e.code==='KeyE') right.reel=true;
             });
             window.addEventListener('keyup', e => {
-                keys[e.code]=false;
-                if(e.code==='Space') left.active=false;
-                if(e.code==='Enter') right.active=false;
-                if(e.code==='KeyQ') left.reel=false;
-                if(e.code==='KeyE') right.reel=false;
+                keys[e.code] = false;
+                if(e.code === 'Space') releaseGrapple(true);
+                if(e.code === 'Enter') releaseGrapple(false);
+                if(e.code === 'KeyQ') left.reel = false;
+                if(e.code === 'KeyE') right.reel = false;
             });
             canvas.addEventListener('click', () => {
                 if(!isVR) canvas.requestPointerLock && canvas.requestPointerLock();
@@ -570,25 +593,15 @@
                     if (state.active) {
                         laser.visible = false; 
                         
-                        // YANK-TO-BOOST MATH
+                        // --- YANK & CHARGE LOGIC ---
                         const currentY = _v.y;
                         if (c.userData.prevY !== undefined && state.active) {
-                            const vYank = (c.userData.prevY - currentY) / dt; 
-                            const now = performance.now();
+                            const vYank = (c.userData.prevY - currentY) / dt; // Downward hand movement speed
                             
-                            // Lowered threshold slightly to 1.5m/s and tuned cooldown
-                            if (vYank > 1.5 && (now - (c.userData.lastYank || 0) > 250)) { 
-                                c.userData.lastYank = now;
-                                
-                                const dx = state.ax - player.x;
-                                const dy = state.ay - player.y;
-                                const dz = state.az - player.z;
-                                const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
-                                
-                                const boost = vYank * 0.5; 
-                                player.vx += (dx/dist) * boost;
-                                player.vy += (dy/dist) * boost;
-                                player.vz += (dz/dist) * boost;
+                            // If pulling downward while holding the grapple, accumulate energy
+                            if (vYank > 1.0) {
+                                state.pullEnergy += vYank * dt;
+                                state.pullEnergy = Math.min(state.pullEnergy, 12); // Cap max charge to prevent physics breakouts
                             }
                         }
                         c.userData.prevY = currentY;
