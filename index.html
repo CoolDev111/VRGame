@@ -1,752 +1,752 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebXR Grappling Hook</title>
-    <style>
-        *{margin:0;padding:0;box-sizing:border-box}
-        body{overflow:hidden;background:#000}
-        #canvas{display:block;width:100vw;height:100vh}
-        #hud{
-            position:absolute;top:10px;left:10px;
-            color:#0f0;font:12px/1.5 monospace;
-            background:rgba(0,0,0,.7);padding:8px 12px;
-            border:1px solid #0a0;border-radius:4px;
-            pointer-events:none;z-index:10;
-        }
-        #controls-hint{
-            position:absolute;bottom:70px;left:50%;transform:translateX(-50%);
-            color:#888;font:11px monospace;text-align:center;
-            background:rgba(0,0,0,.5);padding:6px 14px;border-radius:4px;
-            pointer-events:none;z-index:10;white-space:pre-line;
-        }
-        #vr-button{
-            position:absolute;bottom:16px;left:50%;transform:translateX(-50%);
-            padding:12px 28px;font:700 15px sans-serif;
-            background:#0066cc;color:#fff;border:none;border-radius:6px;
-            cursor:pointer;z-index:11;
-        }
-        #vr-button:disabled{background:#444;color:#888;cursor:not-allowed}
-    </style>
-</head>
-<body>
-<canvas id="canvas"></canvas>
-<div id="hud">
-    <div id="status">Init...</div>
-    <div>L: <span id="lg">off</span> R: <span id="rg">off</span></div>
-    <div><span id="vel">0.0</span> m/s | <span id="alt">0.0</span> m</div>
-</div>
-<div id="controls-hint">Desktop: WASD + mouse look (click) | Space/Enter grapple | Q/E reel</div>
-<div id="loader" style="position:fixed;inset:0;background:#111122;display:flex;align-items:center;justify-content:center;z-index:999;flex-direction:column;gap:12px">
-    <div style="color:#0f0;font:16px monospace">LOADING</div>
-    <div style="color:#555;font:12px monospace" id="load-status">three.js...</div>
-</div>
-<button id="vr-button">Enter VR</button>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>WebXR Grappling Hook</title>
+        <style>
+            *{margin:0;padding:0;box-sizing:border-box}
+            body{overflow:hidden;background:#000}
+            #canvas{display:block;width:100vw;height:100vh}
+            #hud{
+                position:absolute;top:10px;left:10px;
+                color:#0f0;font:12px/1.5 monospace;
+                background:rgba(0,0,0,.7);padding:8px 12px;
+                border:1px solid #0a0;border-radius:4px;
+                pointer-events:none;z-index:10;
+            }
+            #controls-hint{
+                position:absolute;bottom:70px;left:50%;transform:translateX(-50%);
+                color:#888;font:11px monospace;text-align:center;
+                background:rgba(0,0,0,.5);padding:6px 14px;border-radius:4px;
+                pointer-events:none;z-index:10;white-space:pre-line;
+            }
+            #vr-button{
+                position:absolute;bottom:16px;left:50%;transform:translateX(-50%);
+                padding:12px 28px;font:700 15px sans-serif;
+                background:#0066cc;color:#fff;border:none;border-radius:6px;
+                cursor:pointer;z-index:11;
+            }
+            #vr-button:disabled{background:#444;color:#888;cursor:not-allowed}
+        </style>
+    </head>
+    <body>
+        <canvas id="canvas"></canvas>
+        <div id="hud">
+            <div id="status">Init...</div>
+            <div>L: <span id="lg">off</span> R: <span id="rg">off</span></div>
+            <div><span id="vel">0.0</span> m/s | <span id="alt">0.0</span> m</div>
+        </div>
+        <div id="controls-hint">Desktop: WASD + mouse look (click) | Space/Enter grapple | Q/E reel</div>
+        <div id="loader" style="position:fixed;inset:0;background:#111122;display:flex;align-items:center;justify-content:center;z-index:999;flex-direction:column;gap:12px">
+            <div style="color:#0f0;font:16px monospace">LOADING</div>
+            <div style="color:#555;font:12px monospace" id="load-status">three.js...</div>
+        </div>
+        <button id="vr-button">Enter VR</button>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script>
-"use strict";
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+        <script>
+            "use strict";
 
-// ===== PRE-ALLOCATED TEMP VECTORS (zero allocation in hot path) =====
-const _v = new THREE.Vector3();
-const _v2 = new THREE.Vector3();
-const _v3 = new THREE.Vector3();
-const _m = new THREE.Matrix4();
-const _q = new THREE.Quaternion();
-const _dummy = new THREE.Object3D();
-const _c = new THREE.Color();
-const _up = new THREE.Vector3(0, 1, 0);
+            // ===== PRE-ALLOCATED TEMP VECTORS (zero allocation in hot path) =====
+            const _v = new THREE.Vector3();
+            const _v2 = new THREE.Vector3();
+            const _v3 = new THREE.Vector3();
+            const _m = new THREE.Matrix4();
+            const _q = new THREE.Quaternion();
+            const _dummy = new THREE.Object3D();
+            const _c = new THREE.Color();
+            const _up = new THREE.Vector3(0, 1, 0);
 
-// ===== SEEDED RNG =====
-function mulberry32(s){return function(){s|=0;s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
-function hashChunk(cx,cz){let h=cx*374761393+cz*668265263;h=(h^(h>>13))*1274126177;return h^(h>>16)}
+            // ===== SEEDED RNG =====
+            function mulberry32(s){return function(){s|=0;s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+            function hashChunk(cx,cz){let h=cx*374761393+cz*668265263;h=(h^(h>>13))*1274126177;return h^(h>>16)}
 
-// ===== CONSTANTS =====
-const GRAVITY    = -9.81;
-const SPRING_K   = 400;
-const DAMPING    = 8;
-const REEL_RATE  = 4.0;
-const ROPE_MIN   = 0.5;
-const MOVE_SPEED = 12;
-const TURN_SPEED = 2.0;
-const DEADZONE   = 0.15;
+            // ===== CONSTANTS =====
+            const GRAVITY    = -9.81;
+            const SPRING_K   = 400;
+            const DAMPING    = 8;
+            const REEL_RATE  = 4.0;
+            const ROPE_MIN   = 0.5;
+            const MOVE_SPEED = 12;
+            const TURN_SPEED = 2.0;
+            const DEADZONE   = 0.15;
 
-const CHUNK_N    = 5;            // 5x5 buildings per chunk
-const SPACING    = 12;           // world units between centers
-const CHUNK_W    = CHUNK_N * SPACING;  // 60
-let   LOAD_DIST  = 0;            // Start with just spawn chunk, expand after first frames
-const MAX_INST   = 200;          // max visible building instances
-const DENSITY    = 0.35;
-const MIN_H      = 8;
-const MAX_H      = 55;
-const MIN_SZ     = 3;
-const MAX_SZ     = 6;
+            const CHUNK_N    = 5;            // 5x5 buildings per chunk
+            const SPACING    = 12;           // world units between centers
+            const CHUNK_W    = CHUNK_N * SPACING;  // 60
+            let   LOAD_DIST  = 0;            // Start with just spawn chunk, expand after first frames
+            const MAX_INST   = 200;          // max visible building instances
+            const DENSITY    = 0.35;
+            const MIN_H      = 8;
+            const MAX_H      = 55;
+            const MIN_SZ     = 3;
+            const MAX_SZ     = 6;
 
-// ===== RENDERER (Quest-optimized) =====
-const canvas = document.getElementById('canvas');
-const renderer = new THREE.WebGLRenderer({canvas, antialias:false, powerPreference:'high-performance'});
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(1);  // Native res only — no 2x on Quest
-renderer.xr.enabled = true;
+            // ===== RENDERER (Quest-optimized) =====
+            const canvas = document.getElementById('canvas');
+            const renderer = new THREE.WebGLRenderer({canvas, antialias:false, powerPreference:'high-performance'});
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(1);  // Native res only — no 2x on Quest
+            renderer.xr.enabled = true;
 
-// ===== SCENE =====
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x111122);
-scene.fog = new THREE.Fog(0x111122, 40, 160);  // Linear fog, cheap
+            // ===== SCENE =====
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111122);
+            scene.fog = new THREE.Fog(0x111122, 40, 160);  // Linear fog, cheap
 
-// ===== CAMERA + RIG =====
-// FIX: Changed near plane from 0.5 to 0.01 to stop hands from disappearing
-const camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.01, 200);
-const rig = new THREE.Group();
-rig.add(camera);
-scene.add(rig);
+            // ===== CAMERA + RIG =====
+            // FIX: Changed near plane from 0.5 to 0.01 to stop hands from disappearing
+            const camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.01, 200);
+            const rig = new THREE.Group();
+            rig.add(camera);
+            scene.add(rig);
 
-// ===== LIGHTING & SKY (Brighter) =====
-scene.background = new THREE.Color(0x87CEEB); // Bright sky blue
-scene.fog = new THREE.Fog(0x87CEEB, 40, 160);
-// Boosted ambient and directional lights drastically
-scene.add(new THREE.AmbientLight(0xffffff, 1.2));
-const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-sun.position.set(30, 50, 20);
-scene.add(sun);
+            // ===== LIGHTING & SKY (Brighter) =====
+            scene.background = new THREE.Color(0x87CEEB); // Bright sky blue
+            scene.fog = new THREE.Fog(0x87CEEB, 40, 160);
+            // Boosted ambient and directional lights drastically
+            scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+            const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+            sun.position.set(30, 50, 20);
+            scene.add(sun);
 
-// ===== INSTANCED MESH FOR ALL BUILDINGS =====
-const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-const bldgMat = new THREE.MeshLambertMaterial({color:0x445566});
-const bldgMesh = new THREE.InstancedMesh(boxGeo, bldgMat, MAX_INST);
-bldgMesh.count = 0;
-scene.add(bldgMesh);
+            // ===== INSTANCED MESH FOR ALL BUILDINGS =====
+            const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+            const bldgMat = new THREE.MeshLambertMaterial({color:0x445566});
+            const bldgMesh = new THREE.InstancedMesh(boxGeo, bldgMat, MAX_INST);
+            bldgMesh.count = 0;
+            scene.add(bldgMesh);
 
-// Instance color buffer
-bldgMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INST * 3), 3);
-bldgMesh.instanceColor.setUsage(THREE.StaticDrawUsage);
+            // Instance color buffer
+            bldgMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INST * 3), 3);
+            bldgMesh.instanceColor.setUsage(THREE.StaticDrawUsage);
 
-// ===== CHUNK DATA (plain objects, no Three.js objects) =====
-const chunkData = new Map(); // "cx,cz" -> [{x,z,w,h,d,hue,lit}]
-let activeChunks = new Set();
-let chunksDirty = true;
+            // ===== CHUNK DATA (plain objects, no Three.js objects) =====
+            const chunkData = new Map(); // "cx,cz" -> [{x,z,w,h,d,hue,lit}]
+            let activeChunks = new Set();
+            let chunksDirty = true;
 
-function genChunkData(cx, cz) {
-    const key = cx + ',' + cz;
-    if (chunkData.has(key)) return;
-    const rng = mulberry32(hashChunk(cx, cz));
-    const arr = [];
-    const bx = cx * CHUNK_W;
-    const bz = cz * CHUNK_W;
-    for (let lx = 0; lx < CHUNK_N; lx++) {
-        for (let lz = 0; lz < CHUNK_N; lz++) {
-            if (rng() > DENSITY) continue;
-            const h = MIN_H + rng() * (MAX_H - MIN_H);
-            const sz = MIN_SZ + rng() * (MAX_SZ - MIN_SZ);
-            arr.push({
-                x: bx + lx * SPACING + (rng()-0.5)*2,
-                z: bz + lz * SPACING + (rng()-0.5)*2,
-                w: sz, h: h, d: sz,
-                hue: 0.55 + (rng()-0.5)*0.1,
-                lit: 0.12 + rng()*0.15
-            });
-        }
-    }
-    chunkData.set(key, arr);
-}
+            function genChunkData(cx, cz) {
+                const key = cx + ',' + cz;
+                if (chunkData.has(key)) return;
+                const rng = mulberry32(hashChunk(cx, cz));
+                const arr = [];
+                const bx = cx * CHUNK_W;
+                const bz = cz * CHUNK_W;
+                for (let lx = 0; lx < CHUNK_N; lx++) {
+                    for (let lz = 0; lz < CHUNK_N; lz++) {
+                        if (rng() > DENSITY) continue;
+                        const h = MIN_H + rng() * (MAX_H - MIN_H);
+                        const sz = MIN_SZ + rng() * (MAX_SZ - MIN_SZ);
+                        arr.push({
+                            x: bx + lx * SPACING + (rng()-0.5)*2,
+                            z: bz + lz * SPACING + (rng()-0.5)*2,
+                            w: sz, h: h, d: sz,
+                            hue: 0.55 + (rng()-0.5)*0.1,
+                            lit: 0.12 + rng()*0.15
+                        });
+                    }
+                }
+                chunkData.set(key, arr);
+            }
 
-function updateChunks() {
-    const pcx = Math.floor(player.x / CHUNK_W);
-    const pcz = Math.floor(player.z / CHUNK_W);
-    const needed = new Set();
-    for (let dx = -LOAD_DIST; dx <= LOAD_DIST; dx++) {
-        for (let dz = -LOAD_DIST; dz <= LOAD_DIST; dz++) {
-            const k = (pcx+dx)+','+(pcz+dz);
-            needed.add(k);
-            if (!chunkData.has(k)) genChunkData(pcx+dx, pcz+dz);
-        }
-    }
-    // Check if changed
-    if (needed.size === activeChunks.size) {
-        let same = true;
-        for (const k of needed) { if (!activeChunks.has(k)) { same=false; break; } }
-        if (same) return;
-    }
-    activeChunks = needed;
-    chunksDirty = true;
-}
+            function updateChunks() {
+                const pcx = Math.floor(player.x / CHUNK_W);
+                const pcz = Math.floor(player.z / CHUNK_W);
+                const needed = new Set();
+                for (let dx = -LOAD_DIST; dx <= LOAD_DIST; dx++) {
+                    for (let dz = -LOAD_DIST; dz <= LOAD_DIST; dz++) {
+                        const k = (pcx+dx)+','+(pcz+dz);
+                        needed.add(k);
+                        if (!chunkData.has(k)) genChunkData(pcx+dx, pcz+dz);
+                    }
+                }
+                // Check if changed
+                if (needed.size === activeChunks.size) {
+                    let same = true;
+                    for (const k of needed) { if (!activeChunks.has(k)) { same=false; break; } }
+                    if (same) return;
+                }
+                activeChunks = needed;
+                chunksDirty = true;
+            }
 
-function rebuildInstances() {
-    let idx = 0;
-    for (const key of activeChunks) {
-        const data = chunkData.get(key);
-        if (!data) continue;
-        for (let i = 0; i < data.length; i++) {
-            if (idx >= MAX_INST) break;
-            const b = data[i];
-            _dummy.position.set(b.x, b.h * 0.5, b.z);
-            _dummy.scale.set(b.w, b.h, b.d);
-            _dummy.updateMatrix();
-            bldgMesh.setMatrixAt(idx, _dummy.matrix);
-            _c.setHSL(b.hue, 0.3, b.lit);
-            bldgMesh.instanceColor.setXYZ(idx, _c.r, _c.g, _c.b);
-            idx++;
-        }
-        if (idx >= MAX_INST) break;
-    }
-    bldgMesh.count = idx;
-    bldgMesh.instanceMatrix.needsUpdate = true;
-    bldgMesh.instanceColor.needsUpdate = true;
-}
+            function rebuildInstances() {
+                let idx = 0;
+                for (const key of activeChunks) {
+                    const data = chunkData.get(key);
+                    if (!data) continue;
+                    for (let i = 0; i < data.length; i++) {
+                        if (idx >= MAX_INST) break;
+                        const b = data[i];
+                        _dummy.position.set(b.x, b.h * 0.5, b.z);
+                        _dummy.scale.set(b.w, b.h, b.d);
+                        _dummy.updateMatrix();
+                        bldgMesh.setMatrixAt(idx, _dummy.matrix);
+                        _c.setHSL(b.hue, 0.3, b.lit);
+                        bldgMesh.instanceColor.setXYZ(idx, _c.r, _c.g, _c.b);
+                        idx++;
+                    }
+                    if (idx >= MAX_INST) break;
+                }
+                bldgMesh.count = idx;
+                bldgMesh.instanceMatrix.needsUpdate = true;
+                bldgMesh.instanceColor.needsUpdate = true;
+            }
 
-// ===== GROUND =====
-const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(600, 600),
-    new THREE.MeshLambertMaterial({color:0x1a2a1a})
-);
-ground.rotation.x = -Math.PI/2;
-ground.position.y = -0.1;
-scene.add(ground);
+            // ===== GROUND =====
+            const ground = new THREE.Mesh(
+                new THREE.PlaneGeometry(600, 600),
+                new THREE.MeshLambertMaterial({color:0x1a2a1a})
+            );
+            ground.rotation.x = -Math.PI/2;
+            ground.position.y = -0.1;
+            scene.add(ground);
 
-// ===== ROPE VISUALS =====
-function makeRope(color) {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
-    const l = new THREE.Line(g, new THREE.LineBasicMaterial({color, linewidth: 2}));
-    l.visible = false;
-    l.frustumCulled = false;
-    scene.add(l);
-    return l;
-}
-const ropeL = makeRope(0x00ff88);
-const ropeR = makeRope(0xff00aa);
+            // ===== ROPE VISUALS =====
+            function makeRope(color) {
+                const g = new THREE.BufferGeometry();
+                g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+                const l = new THREE.Line(g, new THREE.LineBasicMaterial({color, linewidth: 2}));
+                l.visible = false;
+                l.frustumCulled = false;
+                scene.add(l);
+                return l;
+            }
+            const ropeL = makeRope(0x00ff88);
+            const ropeR = makeRope(0xff00aa);
 
-function updateRope(line, active, anchor, controller) {
-    if (!active) { line.visible = false; return; }
-    line.visible = true;
-    
-    // Get exact world position of the hand controller
-    controller.getWorldPosition(_v);
-    
-    const p = line.geometry.attributes.position.array;
-    p[0] = _v.x; p[1] = _v.y; p[2] = _v.z;       // Start at the hand
-    p[3] = anchor.ax; p[4] = anchor.ay; p[5] = anchor.az; // End at the building anchor
-    line.geometry.attributes.position.needsUpdate = true;
-}
-
-// ===== PLAYER STATE =====
-const player = {x:0, y:20, z:0, vx:0, vy:0, vz:0};
-const left  = {active:false, ax:0,ay:0,az:0, len:0, reel:false, prevY:0, cd:0};
-const right = {active:false, ax:0,ay:0,az:0, len:0, reel:false, prevY:0, cd:0};
-
-// ===== RAYCASTER =====
-const ray = new THREE.Raycaster();
-ray.far = 80;
-
-function grappleRay(ox, oy, oz, dx, dy, dz) {
-    _v.set(ox, oy, oz);
-    _v2.set(dx, dy, dz).normalize();
-    ray.set(_v, _v2);
-    const hits = ray.intersectObject(bldgMesh);
-    return hits.length > 0 ? hits[0] : null;
-}
-
-// ===== PHYSICS =====
-function physics(dt) {
-    dt = Math.min(dt, 0.025);
-    const p = player;
-
-    let fx=0, fy=0, fz=0;
-    
-    // Left Web Tension (Tuned k=200 for stability)
-    if (left.active) {
-        const dx=p.x-left.ax, dy=p.y-left.ay, dz=p.z-left.az;
-        const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
-        if (dist > left.len && dist > 0.001) {
-            const inv=1/dist;
-            const ux=dx*inv, uy=dy*inv, uz=dz*inv;
-            const vAlong=p.vx*ux+p.vy*uy+p.vz*uz;
-            const f=-(200 * (dist-left.len) + 12 * vAlong);
-            fx+=ux*f; fy+=uy*f; fz+=uz*f;
-        }
-    }
-    
-    // Right Web Tension (Tuned k=200 for stability)
-    if (right.active) {
-        const dx=p.x-right.ax, dy=p.y-right.ay, dz=p.z-right.az;
-        const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
-        if (dist > right.len && dist > 0.001) { // Fixed: checked right.len instead of left.len
-            const inv=1/dist;
-            const ux=dx*inv, uy=dy*inv, uz=dz*inv;
-            const vAlong=p.vx*ux+p.vy*uy+p.vz*uz;
-            const f=-(200 * (dist-right.len) + 12 * vAlong);
-            fx+=ux*f; fy+=uy*f; fz+=uz*f;
-        }
-    }
-
-    // Integrate forces
-    p.vy += GRAVITY * dt;
-    p.vx += fx * dt;
-    p.vy += fy * dt;
-    p.vz += fz * dt;
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    p.z += p.vz * dt;
-
-    // Reel
-    if (left.active && left.reel) left.len = Math.max(ROPE_MIN, left.len - REEL_RATE*dt);
-    if (right.active && right.reel) right.len = Math.max(ROPE_MIN, right.len - REEL_RATE*dt);
-
-    // --- HARD VELOCITY CAP (Stops the Light-Speed Bug) ---
-    const MAX_SPEED = 35; // Maximum speed in m/s (~125 km/h) — fast and exhilarating, but safe
-    const currentSpeed = Math.sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz);
-    if (currentSpeed > MAX_SPEED) {
-        p.vx = (p.vx / currentSpeed) * MAX_SPEED;
-        p.vy = (p.vy / currentSpeed) * MAX_SPEED;
-        p.vz = (p.vz / currentSpeed) * MAX_SPEED;
-    }
-
-    // Ground collision
-    if (p.y < 0.5) { p.y=0.5; if(p.vy<0) p.vy=0; }
-
-    // Respawn if you fall off the map
-    if (p.y < -50) {
-        p.x=0; p.y=20; p.z=0; p.vx=p.vy=p.vz=0;
-        left.active=right.active=false;
-    }
-}
-
-// ===== XR STATE & HELPERS (Restored) =====
-let xrSession = null;
-let xrBaseSpace = null;
-let isVR = false;
-let rigYaw = 0;
-let currentFrame = null;
-
-function attachGrapple(isLeft, hit) {
-    const dx = player.x - hit.point.x, dy = player.y - hit.point.y, dz = player.z - hit.point.z;
-    const g = isLeft ? left : right;
-    g.active = true;
-    g.ax = hit.point.x; g.ay = hit.point.y; g.az = hit.point.z;
-    g.len = Math.sqrt(dx*dx + dy*dy + dz*dz);
-}
-
-function tryGrapple(isLeft, ox, oy, oz, dx, dy, dz) {
-    let hit = grappleRay(ox, oy, oz, dx, dy, dz);
-    if (!hit) {
-        // Try slightly downward if the first cast misses, making swinging more forgiving
-        hit = grappleRay(ox, oy, oz, dx, dy - 0.3, dz);
-    }
-    if (hit) attachGrapple(isLeft, hit);
-}
-
-// ===== CONTROLLER VISUALS (Three.js Native) =====
-const ctrl0 = renderer.xr.getController(0);
-const ctrl1 = renderer.xr.getController(1);
-rig.add(ctrl0);
-rig.add(ctrl1);
-
-// Hand meshes
-const ctrlGeo = new THREE.BoxGeometry(0.04, 0.12, 0.06);
-const ctrlMatL = new THREE.MeshLambertMaterial({color:0x00ff66, emissive:0x005522});
-const ctrlMatR = new THREE.MeshLambertMaterial({color:0xff00aa, emissive:0xaa0044});
-const handL = new THREE.Mesh(ctrlGeo, ctrlMatL);
-const handR = new THREE.Mesh(ctrlGeo, ctrlMatR);
-
-// Stop the engine from culling the hands when they get close to your face
-handL.frustumCulled = false;
-handR.frustumCulled = false;
-
-ctrl0.add(handL);
-ctrl1.add(handR);
-
-// Laser pointers
-function makeLaser() {
-    const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)]);
-    const mat = new THREE.LineBasicMaterial({color:0x00ffff, transparent:true, opacity:0.6});
-    return new THREE.Line(geo, mat);
-}
-const laser0 = makeLaser();
-const laser1 = makeLaser();
-ctrl0.add(laser0);
-ctrl1.add(laser1);
-
-// ===== XR EVENT HANDLERS =====
-function onCtrlConnect(e) { this.userData.handedness = e.data.handedness; }
-function onCtrlGrapple() {
-    const isL = this.userData.handedness === 'left';
-    this.getWorldPosition(_v);
-    _v2.set(0, 0, -1).transformDirection(this.matrixWorld);
-    tryGrapple(isL, _v.x, _v.y, _v.z, _v2.x, _v2.y, _v2.z);
-}
-function onCtrlGrappleEnd() { (this.userData.handedness === 'left' ? left : right).active = false; }
-function onCtrlReel() { (this.userData.handedness === 'left' ? left : right).reel = true; }
-function onCtrlReelEnd() { (this.userData.handedness === 'left' ? left : right).reel = false; }
-
-[ctrl0, ctrl1].forEach(c => {
-    c.addEventListener('connected', onCtrlConnect);
-    c.addEventListener('selectstart', onCtrlGrapple);
-    c.addEventListener('selectend', onCtrlGrappleEnd);
-    c.addEventListener('squeezestart', onCtrlReel);
-    c.addEventListener('squeezeend', onCtrlReelEnd);
-});
-
-// ===== SESSION =====
-async function startSession(session) {
-    xrSession = session;
-    isVR = true;
-    session.addEventListener('end', endSession);
-
-    // FIX: Use the r128 compatible method to set the reference space type
-    renderer.xr.setReferenceSpaceType('local-floor');
-    await renderer.xr.setSession(session);
-
-    // Keep our manual reference space purely for our custom raycasting math
-    try {
-        xrBaseSpace = await session.requestReferenceSpace('local-floor');
-    } catch(_) {
-        xrBaseSpace = await session.requestReferenceSpace('viewer');
-    }
-
-    // Reset player physics
-    player.x = 0; player.y = 20; player.z = 0;
-    player.vx = player.vy = player.vz = 0;
-    left.active = right.active = false;
-    rigYaw = 0;
-    rig.quaternion.identity();
-
-    // Update HUD
-    document.getElementById('controls-hint').textContent = 'L-stick move · R-stick turn · Triggers grapple · Grips reel';
-    setStatus('VR Active');
-}
-
-function endSession() {
-    xrSession = null; 
-    xrBaseSpace = null; 
-    isVR = false;
-    left.active = right.active = false;
-    
-    // Update HUD
-    document.getElementById('controls-hint').textContent = 'WASD + mouse look (click) | Space/Enter grapple | Q/E reel';
-    setStatus('Desktop');
-    document.getElementById('vr-button').textContent = 'Enter VR';
-    document.getElementById('vr-button').onclick = requestVR;
-}
-
-// ===== DESKTOP CONTROLS =====
-const keys = {};
-let dYaw=0, dPitch=0;
-
-window.addEventListener('keydown', e => {
-    keys[e.code]=true;
-    if(e.code==='Space'&&!e.repeat){e.preventDefault(); desktopGrapple(true)}
-    if(e.code==='Enter'&&!e.repeat){e.preventDefault(); desktopGrapple(false)}
-    if(e.code==='KeyQ') left.reel=true;
-    if(e.code==='KeyE') right.reel=true;
-});
-window.addEventListener('keyup', e => {
-    keys[e.code]=false;
-    if(e.code==='Space') left.active=false;
-    if(e.code==='Enter') right.active=false;
-    if(e.code==='KeyQ') left.reel=false;
-    if(e.code==='KeyE') right.reel=false;
-});
-canvas.addEventListener('click', () => {
-    if(!isVR) canvas.requestPointerLock && canvas.requestPointerLock();
-});
-window.addEventListener('mousemove', e => {
-    if(document.pointerLockElement===canvas){
-        dYaw-=e.movementX*0.003;
-        dPitch-=e.movementY*0.003;
-        dPitch=Math.max(-1.5,Math.min(1.5,dPitch));
-    }
-});
-
-function desktopGrapple(isL) {
-    const cosY=Math.cos(dYaw), sinY=Math.sin(dYaw);
-    const fx = -sinY, fz = -cosY;
-    const fy = Math.sin(dPitch);
-    const flen = Math.sqrt(fx*fx+fy*fy+fz*fz);
-    tryGrapple(isL, player.x, player.y+0.5, player.z, fx/flen, fy/flen, fz/flen);
-}
-
-// ===== HUD (throttled) =====
-const elStatus = document.getElementById('status');
-const elLG = document.getElementById('lg');
-const elRG = document.getElementById('rg');
-const elVel = document.getElementById('vel');
-const elAlt = document.getElementById('alt');
-let hudTick = 0;
-
-function setStatus(t) { elStatus.textContent = t; }
-function updateHUD() {
-    hudTick++;
-    if (hudTick % 10 !== 0) return; // ~6 updates/sec at 60fps
-    elLG.textContent = left.active ? 'ON' : 'off';
-    elLG.style.color = left.active ? '#ff0' : '#0f0';
-    elRG.textContent = right.active ? 'ON' : 'off';
-    elRG.style.color = right.active ? '#ff0' : '#0f0';
-    const spd = Math.sqrt(player.vx*player.vx+player.vy*player.vy+player.vz*player.vz);
-    elVel.textContent = spd.toFixed(1);
-    elAlt.textContent = player.y.toFixed(1);
-}
-
-// ===== MAIN LOOP =====
-let lastT = performance.now();
-let warmFrames = 0;
-
-function animate(now, frame) {
-    // NO requestAnimationFrame here! setAnimationLoop handles it.
-    const dt = Math.min((now - lastT) / 1000, 0.1);
-    lastT = now;
-    currentFrame = frame || null;
-
-    if (isVR && frame) {
-        updateVR(frame, dt);
-    } else {
-        updateDesktop(dt);
-    }
-
-    // Physics (max 2 sub-steps)
-    const steps = Math.min(Math.ceil(dt * 60), 3);
-    const sdt = dt / steps;
-    for (let i = 0; i < steps; i++) physics(sdt);
-
-    // Expand load radius after warmup
-    if (LOAD_DIST < 1) {
-        warmFrames++;
-        if (warmFrames > 30) LOAD_DIST = 1;
-    }
-    // Chunks (only rebuild instances when dirty)
-    updateChunks();
-    if (chunksDirty) { rebuildInstances(); chunksDirty = false; }
-
-    const leftCtrl = (ctrl0.userData.handedness === 'left') ? ctrl0 : ctrl1;
-    const rightCtrl = (ctrl0.userData.handedness === 'right') ? ctrl0 : ctrl1;
-
-    // Rope visuals anchored to hands
-    updateRope(ropeL, left.active, left, leftCtrl);
-    updateRope(ropeR, right.active, right, rightCtrl);
-
-    // Ground follows player
-    ground.position.x = player.x;
-    ground.position.z = player.z;
-
-    renderer.render(scene, camera);
-    updateHUD();
-}
-
-function updateVR(frame, dt) {
-    const session = renderer.xr.getSession();
-    if (!session || !session.inputSources) return;
-
-    // 1. Update Lasers visually & process Yank-to-Boost
-    [ctrl0, ctrl1].forEach(c => {
-        if (!c.userData.handedness) return;
-        const isL = c.userData.handedness === 'left';
-        const state = isL ? left : right;
-        const laser = c.children[1]; 
-
-        c.getWorldPosition(_v);
-        _v2.set(0, 0, -1).transformDirection(c.matrixWorld);
-
-        // Cooldown tick for Yank Boost
-        if (state.cd > 0) state.cd -= dt;
-
-        if (state.active) {
-            laser.visible = false; 
-            
-            // YANK-TO-BOOST MATH
-            const currentY = _v.y;
-            if (c.userData.prevY !== undefined && state.active) {
-                const vYank = (c.userData.prevY - currentY) / dt; 
-                const now = performance.now();
+            function updateRope(line, active, anchor, controller) {
+                if (!active) { line.visible = false; return; }
+                line.visible = true;
                 
-                // Lowered threshold slightly to 1.5m/s and tuned cooldown
-                if (vYank > 1.5 && (now - (c.userData.lastYank || 0) > 250)) { 
-                    c.userData.lastYank = now;
-                    
-                    const dx = state.ax - player.x;
-                    const dy = state.ay - player.y;
-                    const dz = state.az - player.z;
-                    const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
-                    
-                    const boost = vYank * 0.5; 
-                    player.vx += (dx/dist) * boost;
-                    player.vy += (dy/dist) * boost;
-                    player.vz += (dz/dist) * boost;
+                // Get exact world position of the hand controller
+                controller.getWorldPosition(_v);
+                
+                const p = line.geometry.attributes.position.array;
+                p[0] = _v.x; p[1] = _v.y; p[2] = _v.z;       // Start at the hand
+                p[3] = anchor.ax; p[4] = anchor.ay; p[5] = anchor.az; // End at the building anchor
+                line.geometry.attributes.position.needsUpdate = true;
+            }
+
+            // ===== PLAYER STATE =====
+            const player = {x:0, y:20, z:0, vx:0, vy:0, vz:0};
+            const left  = {active:false, ax:0,ay:0,az:0, len:0, reel:false, prevY:0, cd:0};
+            const right = {active:false, ax:0,ay:0,az:0, len:0, reel:false, prevY:0, cd:0};
+
+            // ===== RAYCASTER =====
+            const ray = new THREE.Raycaster();
+            ray.far = 80;
+
+            function grappleRay(ox, oy, oz, dx, dy, dz) {
+                _v.set(ox, oy, oz);
+                _v2.set(dx, dy, dz).normalize();
+                ray.set(_v, _v2);
+                const hits = ray.intersectObject(bldgMesh);
+                return hits.length > 0 ? hits[0] : null;
+            }
+
+            // ===== PHYSICS =====
+            function physics(dt) {
+                dt = Math.min(dt, 0.025);
+                const p = player;
+
+                let fx=0, fy=0, fz=0;
+                
+                // Left Web Tension (Tuned k=200 for stability)
+                if (left.active) {
+                    const dx=p.x-left.ax, dy=p.y-left.ay, dz=p.z-left.az;
+                    const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
+                    if (dist > left.len && dist > 0.001) {
+                        const inv=1/dist;
+                        const ux=dx*inv, uy=dy*inv, uz=dz*inv;
+                        const vAlong=p.vx*ux+p.vy*uy+p.vz*uz;
+                        const f=-(200 * (dist-left.len) + 12 * vAlong);
+                        fx+=ux*f; fy+=uy*f; fz+=uz*f;
+                    }
+                }
+                
+                // Right Web Tension (Tuned k=200 for stability)
+                if (right.active) {
+                    const dx=p.x-right.ax, dy=p.y-right.ay, dz=p.z-right.az;
+                    const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
+                    if (dist > right.len && dist > 0.001) { // Fixed: checked right.len instead of left.len
+                        const inv=1/dist;
+                        const ux=dx*inv, uy=dy*inv, uz=dz*inv;
+                        const vAlong=p.vx*ux+p.vy*uy+p.vz*uz;
+                        const f=-(200 * (dist-right.len) + 12 * vAlong);
+                        fx+=ux*f; fy+=uy*f; fz+=uz*f;
+                    }
+                }
+
+                // Integrate forces
+                p.vy += GRAVITY * dt;
+                p.vx += fx * dt;
+                p.vy += fy * dt;
+                p.vz += fz * dt;
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+                p.z += p.vz * dt;
+
+                // Reel
+                if (left.active && left.reel) left.len = Math.max(ROPE_MIN, left.len - REEL_RATE*dt);
+                if (right.active && right.reel) right.len = Math.max(ROPE_MIN, right.len - REEL_RATE*dt);
+
+                // --- HARD VELOCITY CAP (Stops the Light-Speed Bug) ---
+                const MAX_SPEED = 35; // Maximum speed in m/s (~125 km/h) — fast and exhilarating, but safe
+                const currentSpeed = Math.sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz);
+                if (currentSpeed > MAX_SPEED) {
+                    p.vx = (p.vx / currentSpeed) * MAX_SPEED;
+                    p.vy = (p.vy / currentSpeed) * MAX_SPEED;
+                    p.vz = (p.vz / currentSpeed) * MAX_SPEED;
+                }
+
+                // Ground collision
+                if (p.y < 0.5) { p.y=0.5; if(p.vy<0) p.vy=0; }
+
+                // Respawn if you fall off the map
+                if (p.y < -50) {
+                    p.x=0; p.y=20; p.z=0; p.vx=p.vy=p.vz=0;
+                    left.active=right.active=false;
                 }
             }
-            c.userData.prevY = currentY;
-        } else {
-            laser.visible = true;
-            const hit = grappleRay(_v.x, _v.y, _v.z, _v2.x, _v2.y, _v2.z);
-            if (hit) {
-                laser.scale.z = hit.distance;
-                laser.material.color.setHex(isL ? 0x00ff66 : 0xff00aa);
-                laser.material.opacity = 0.8;
+
+            // ===== XR STATE & HELPERS (Restored) =====
+            let xrSession = null;
+            let xrBaseSpace = null;
+            let isVR = false;
+            let rigYaw = 0;
+            let currentFrame = null;
+
+            function attachGrapple(isLeft, hit) {
+                const dx = player.x - hit.point.x, dy = player.y - hit.point.y, dz = player.z - hit.point.z;
+                const g = isLeft ? left : right;
+                g.active = true;
+                g.ax = hit.point.x; g.ay = hit.point.y; g.az = hit.point.z;
+                g.len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+            }
+
+            function tryGrapple(isLeft, ox, oy, oz, dx, dy, dz) {
+                let hit = grappleRay(ox, oy, oz, dx, dy, dz);
+                if (!hit) {
+                    // Try slightly downward if the first cast misses, making swinging more forgiving
+                    hit = grappleRay(ox, oy, oz, dx, dy - 0.3, dz);
+                }
+                if (hit) attachGrapple(isLeft, hit);
+            }
+
+            // ===== CONTROLLER VISUALS (Three.js Native) =====
+            const ctrl0 = renderer.xr.getController(0);
+            const ctrl1 = renderer.xr.getController(1);
+            rig.add(ctrl0);
+            rig.add(ctrl1);
+
+            // Hand meshes
+            const ctrlGeo = new THREE.BoxGeometry(0.04, 0.12, 0.06);
+            const ctrlMatL = new THREE.MeshLambertMaterial({color:0x00ff66, emissive:0x005522});
+            const ctrlMatR = new THREE.MeshLambertMaterial({color:0xff00aa, emissive:0xaa0044});
+            const handL = new THREE.Mesh(ctrlGeo, ctrlMatL);
+            const handR = new THREE.Mesh(ctrlGeo, ctrlMatR);
+
+            // Stop the engine from culling the hands when they get close to your face
+            handL.frustumCulled = false;
+            handR.frustumCulled = false;
+
+            ctrl0.add(handL);
+            ctrl1.add(handR);
+
+            // Laser pointers
+            function makeLaser() {
+                const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)]);
+                const mat = new THREE.LineBasicMaterial({color:0x00ffff, transparent:true, opacity:0.6});
+                return new THREE.Line(geo, mat);
+            }
+            const laser0 = makeLaser();
+            const laser1 = makeLaser();
+            ctrl0.add(laser0);
+            ctrl1.add(laser1);
+
+            // ===== XR EVENT HANDLERS =====
+            function onCtrlConnect(e) { this.userData.handedness = e.data.handedness; }
+            function onCtrlGrapple() {
+                const isL = this.userData.handedness === 'left';
+                this.getWorldPosition(_v);
+                _v2.set(0, 0, -1).transformDirection(this.matrixWorld);
+                tryGrapple(isL, _v.x, _v.y, _v.z, _v2.x, _v2.y, _v2.z);
+            }
+            function onCtrlGrappleEnd() { (this.userData.handedness === 'left' ? left : right).active = false; }
+            function onCtrlReel() { (this.userData.handedness === 'left' ? left : right).reel = true; }
+            function onCtrlReelEnd() { (this.userData.handedness === 'left' ? left : right).reel = false; }
+
+            [ctrl0, ctrl1].forEach(c => {
+                c.addEventListener('connected', onCtrlConnect);
+                c.addEventListener('selectstart', onCtrlGrapple);
+                c.addEventListener('selectend', onCtrlGrappleEnd);
+                c.addEventListener('squeezestart', onCtrlReel);
+                c.addEventListener('squeezeend', onCtrlReelEnd);
+            });
+
+            // ===== SESSION =====
+            async function startSession(session) {
+                xrSession = session;
+                isVR = true;
+                session.addEventListener('end', endSession);
+
+                // FIX: Use the r128 compatible method to set the reference space type
+                renderer.xr.setReferenceSpaceType('local-floor');
+                await renderer.xr.setSession(session);
+
+                // Keep our manual reference space purely for our custom raycasting math
+                try {
+                    xrBaseSpace = await session.requestReferenceSpace('local-floor');
+                } catch(_) {
+                    xrBaseSpace = await session.requestReferenceSpace('viewer');
+                }
+
+                // Reset player physics
+                player.x = 0; player.y = 20; player.z = 0;
+                player.vx = player.vy = player.vz = 0;
+                left.active = right.active = false;
+                rigYaw = 0;
+                rig.quaternion.identity();
+
+                // Update HUD
+                document.getElementById('controls-hint').textContent = 'L-stick move · R-stick turn · Triggers grapple · Grips reel';
+                setStatus('VR Active');
+            }
+
+            function endSession() {
+                xrSession = null; 
+                xrBaseSpace = null; 
+                isVR = false;
+                left.active = right.active = false;
+                
+                // Update HUD
+                document.getElementById('controls-hint').textContent = 'WASD + mouse look (click) | Space/Enter grapple | Q/E reel';
+                setStatus('Desktop');
+                document.getElementById('vr-button').textContent = 'Enter VR';
+                document.getElementById('vr-button').onclick = requestVR;
+            }
+
+            // ===== DESKTOP CONTROLS =====
+            const keys = {};
+            let dYaw=0, dPitch=0;
+
+            window.addEventListener('keydown', e => {
+                keys[e.code]=true;
+                if(e.code==='Space'&&!e.repeat){e.preventDefault(); desktopGrapple(true)}
+                if(e.code==='Enter'&&!e.repeat){e.preventDefault(); desktopGrapple(false)}
+                if(e.code==='KeyQ') left.reel=true;
+                if(e.code==='KeyE') right.reel=true;
+            });
+            window.addEventListener('keyup', e => {
+                keys[e.code]=false;
+                if(e.code==='Space') left.active=false;
+                if(e.code==='Enter') right.active=false;
+                if(e.code==='KeyQ') left.reel=false;
+                if(e.code==='KeyE') right.reel=false;
+            });
+            canvas.addEventListener('click', () => {
+                if(!isVR) canvas.requestPointerLock && canvas.requestPointerLock();
+            });
+            window.addEventListener('mousemove', e => {
+                if(document.pointerLockElement===canvas){
+                    dYaw-=e.movementX*0.003;
+                    dPitch-=e.movementY*0.003;
+                    dPitch=Math.max(-1.5,Math.min(1.5,dPitch));
+                }
+            });
+
+            function desktopGrapple(isL) {
+                const cosY=Math.cos(dYaw), sinY=Math.sin(dYaw);
+                const fx = -sinY, fz = -cosY;
+                const fy = Math.sin(dPitch);
+                const flen = Math.sqrt(fx*fx+fy*fy+fz*fz);
+                tryGrapple(isL, player.x, player.y+0.5, player.z, fx/flen, fy/flen, fz/flen);
+            }
+
+            // ===== HUD (throttled) =====
+            const elStatus = document.getElementById('status');
+            const elLG = document.getElementById('lg');
+            const elRG = document.getElementById('rg');
+            const elVel = document.getElementById('vel');
+            const elAlt = document.getElementById('alt');
+            let hudTick = 0;
+
+            function setStatus(t) { elStatus.textContent = t; }
+            function updateHUD() {
+                hudTick++;
+                if (hudTick % 10 !== 0) return; // ~6 updates/sec at 60fps
+                elLG.textContent = left.active ? 'ON' : 'off';
+                elLG.style.color = left.active ? '#ff0' : '#0f0';
+                elRG.textContent = right.active ? 'ON' : 'off';
+                elRG.style.color = right.active ? '#ff0' : '#0f0';
+                const spd = Math.sqrt(player.vx*player.vx+player.vy*player.vy+player.vz*player.vz);
+                elVel.textContent = spd.toFixed(1);
+                elAlt.textContent = player.y.toFixed(1);
+            }
+
+            // ===== MAIN LOOP =====
+            let lastT = performance.now();
+            let warmFrames = 0;
+
+            function animate(now, frame) {
+                // NO requestAnimationFrame here! setAnimationLoop handles it.
+                const dt = Math.min((now - lastT) / 1000, 0.1);
+                lastT = now;
+                currentFrame = frame || null;
+
+                if (isVR && frame) {
+                    updateVR(frame, dt);
+                } else {
+                    updateDesktop(dt);
+                }
+
+                // Physics (max 2 sub-steps)
+                const steps = Math.min(Math.ceil(dt * 60), 3);
+                const sdt = dt / steps;
+                for (let i = 0; i < steps; i++) physics(sdt);
+
+                // Expand load radius after warmup
+                if (LOAD_DIST < 1) {
+                    warmFrames++;
+                    if (warmFrames > 30) LOAD_DIST = 1;
+                }
+                // Chunks (only rebuild instances when dirty)
+                updateChunks();
+                if (chunksDirty) { rebuildInstances(); chunksDirty = false; }
+
+                const leftCtrl = (ctrl0.userData.handedness === 'left') ? ctrl0 : ctrl1;
+                const rightCtrl = (ctrl0.userData.handedness === 'right') ? ctrl0 : ctrl1;
+
+                // Rope visuals anchored to hands
+                updateRope(ropeL, left.active, left, leftCtrl);
+                updateRope(ropeR, right.active, right, rightCtrl);
+
+                // Ground follows player
+                ground.position.x = player.x;
+                ground.position.z = player.z;
+
+                renderer.render(scene, camera);
+                updateHUD();
+            }
+
+            function updateVR(frame, dt) {
+                const session = renderer.xr.getSession();
+                if (!session || !session.inputSources) return;
+
+                // 1. Update Lasers visually & process Yank-to-Boost
+                [ctrl0, ctrl1].forEach(c => {
+                    if (!c.userData.handedness) return;
+                    const isL = c.userData.handedness === 'left';
+                    const state = isL ? left : right;
+                    const laser = c.children[1]; 
+
+                    c.getWorldPosition(_v);
+                    _v2.set(0, 0, -1).transformDirection(c.matrixWorld);
+
+                    // Cooldown tick for Yank Boost
+                    if (state.cd > 0) state.cd -= dt;
+
+                    if (state.active) {
+                        laser.visible = false; 
+                        
+                        // YANK-TO-BOOST MATH
+                        const currentY = _v.y;
+                        if (c.userData.prevY !== undefined && state.active) {
+                            const vYank = (c.userData.prevY - currentY) / dt; 
+                            const now = performance.now();
+                            
+                            // Lowered threshold slightly to 1.5m/s and tuned cooldown
+                            if (vYank > 1.5 && (now - (c.userData.lastYank || 0) > 250)) { 
+                                c.userData.lastYank = now;
+                                
+                                const dx = state.ax - player.x;
+                                const dy = state.ay - player.y;
+                                const dz = state.az - player.z;
+                                const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+                                
+                                const boost = vYank * 0.5; 
+                                player.vx += (dx/dist) * boost;
+                                player.vy += (dy/dist) * boost;
+                                player.vz += (dz/dist) * boost;
+                            }
+                        }
+                        c.userData.prevY = currentY;
+                    } else {
+                        laser.visible = true;
+                        const hit = grappleRay(_v.x, _v.y, _v.z, _v2.x, _v2.y, _v2.z);
+                        if (hit) {
+                            laser.scale.z = hit.distance;
+                            laser.material.color.setHex(isL ? 0x00ff66 : 0xff00aa);
+                            laser.material.opacity = 0.8;
+                        } else {
+                            laser.scale.z = 80;
+                            laser.material.color.setHex(0xff0000); 
+                            laser.material.opacity = 0.15;
+                        }
+                    }
+                    
+                    // Save current Y position for next frame's yank calculation
+                    state.prevY = _v.y; 
+                });
+
+                // 2. Thumbstick Locomotion
+                for (const source of session.inputSources) {
+                    if (!source.gamepad) continue;
+                    const ax = source.gamepad.axes;
+                    const isL = source.handedness === 'left';
+
+                    // Quest standard maps thumbsticks to axes 2 and 3. Fallback to 0 and 1.
+                    if (isL && ax.length >= 2) {
+                        const sx = ax.length >= 4 && Math.abs(ax[2]) > DEADZONE ? ax[2] : (Math.abs(ax[0]) > DEADZONE ? ax[0] : 0);
+                        const sy = ax.length >= 4 && Math.abs(ax[3]) > DEADZONE ? ax[3] : (Math.abs(ax[1]) > DEADZONE ? ax[1] : 0);
+                        
+                        if (sx !== 0 || sy !== 0) {
+                            // Get HMD forward
+                            let hfx = -Math.sin(rigYaw), hfz = -Math.cos(rigYaw);
+                            const vp = frame.getViewerPose(xrBaseSpace);
+                            if (vp && vp.views[0]) {
+                                const vq = _q.setFromRotationMatrix(_m.fromArray(vp.views[0].transform.matrix));
+                                _v3.set(0, 0, -1).applyQuaternion(vq);
+                                _v3.y = 0; 
+                                _v3.normalize();
+                                hfx = _v3.x; 
+                                hfz = _v3.z;
+                            }
+                            const rx = -hfz, rz = hfx;
+                            
+                            // Convert stick to forward/strafe vectors
+                            const mx = (hfx * -sy) + (rx * sx);
+                            const mz = (hfz * -sy) + (rz * sx);
+                            const ml = Math.sqrt(mx*mx + mz*mz) || 1;
+                            
+                            // Add momentum instead of locking velocity
+                            player.vx += (mx / ml) * MOVE_SPEED * dt;
+                            player.vz += (mz / ml) * MOVE_SPEED * dt;
+                        } else if (player.y <= 0.6) {
+                            // Apply ground friction only when stick is idle and player is touching ground
+                            player.vx *= Math.pow(0.01, dt);
+                            player.vz *= Math.pow(0.01, dt);
+                        }
+                    }
+                    
+                    if (!isL && ax.length >= 2) {
+                        const tx = ax.length >= 4 && Math.abs(ax[2]) > DEADZONE ? ax[2] : (Math.abs(ax[0]) > DEADZONE ? ax[0] : 0);
+                        if (tx !== 0) {
+                            // FIX: Subtract tx so pushing right turns right
+                            rigYaw -= tx * TURN_SPEED * dt; 
+                            rig.quaternion.setFromAxisAngle(_up, rigYaw);
+                        }
+                    }
+                }
+
+                // Move rig to updated physics position
+                rig.position.set(player.x, player.y, player.z);
+            }
+
+            function updateDesktop(dt) {
+                rig.position.set(0,0,0);
+                rig.quaternion.identity();
+
+                camera.position.set(player.x, player.y, player.z);
+                camera.rotation.order = 'YXZ';
+                camera.rotation.set(dPitch, dYaw, 0);
+
+                const cosY=Math.cos(dYaw), sinY=Math.sin(dYaw);
+                let mx=0, mz=0;
+                if(keys['KeyW']) mz-=1;
+                if(keys['KeyS']) mz+=1;
+                if(keys['KeyA']) mx-=1;
+                if(keys['KeyD']) mx+=1;
+                if(mx||mz){
+                    const rx=mx*cosY-mz*sinY, rz=mx*sinY+mz*cosY;
+                    const l=Math.sqrt(rx*rx+rz*rz)||1;
+                    player.vx=rx/l*MOVE_SPEED;
+                    player.vz=rz/l*MOVE_SPEED;
+                } else {
+                    player.vx*=0.88;
+                    player.vz*=0.88;
+                }
+            }
+
+            // ===== START =====
+            renderer.setAnimationLoop(animate);
+
+            // VR button — never disable it; isSessionSupported lies on PCVR/Link
+            const vrBtn = document.getElementById('vr-button');
+            let vrReady = false;
+
+            async function requestVR() {
+                vrBtn.textContent = 'Connecting...';
+                vrBtn.disabled = true;
+                try {
+                    // Try local-floor first (best for room-scale)
+                    let s = null;
+                    try {
+                        s = await navigator.xr.requestSession('immersive-vr', {
+                            requiredFeatures: ['local-floor']
+                        });
+                    } catch(_) {
+                        // Fallback: viewer reference space (works on more PCVR setups)
+                        s = await navigator.xr.requestSession('immersive-vr', {
+                            requiredFeatures: ['viewer']
+                        });
+                    }
+                    await startSession(s);
+                    vrReady = true;
+                    vrBtn.textContent = 'Exit VR';
+                    vrBtn.onclick = () => s.end();
+                } catch(e) {
+                    console.error('VR failed:', e);
+                    const msg = e.message || String(e);
+                    // Show useful diagnostics
+                    if (msg.includes('NotSupportedError') || msg.includes('required features'))
+                        setStatus('VR: no headset found. Use Quest standalone browser, or Chrome+Link on PC.');
+                    else if (msg.includes('NotAllowedError') || msg.includes('permission'))
+                        setStatus('VR: permission denied. Allow VR access in browser settings.');
+                    else
+                        setStatus('VR error: ' + msg.slice(0, 60));
+                    vrBtn.textContent = 'Enter VR';
+                    vrBtn.disabled = false;
+                }
+            }
+            vrBtn.addEventListener('click', requestVR);
+
+            // Lightweight check — just update label, never block the button
+            if (navigator.xr) {
+                navigator.xr.isSessionSupported('immersive-vr').then(ok => {
+                    if (ok) {
+                        vrBtn.textContent = 'Enter VR';
+                        setStatus('VR detected');
+                    } else {
+                        // Don't disable! PCVR/Link often reports false but works
+                        vrBtn.textContent = 'Enter VR (try)';
+                        setStatus('VR not detected — click button to try anyway');
+                    }
+                }).catch(() => {
+                    vrBtn.textContent = 'Enter VR (try)';
+                    setStatus('WebXR present — click button to attempt VR');
+                });
             } else {
-                laser.scale.z = 80;
-                laser.material.color.setHex(0xff0000); 
-                laser.material.opacity = 0.15;
+                vrBtn.textContent = 'No WebXR API';
+                vrBtn.disabled = true;
+                setStatus('Browser has no WebXR. Use Chrome/Edge on PC or Quest standalone browser.');
             }
-        }
-        
-        // Save current Y position for next frame's yank calculation
-        state.prevY = _v.y; 
-    });
 
-    // 2. Thumbstick Locomotion
-    for (const source of session.inputSources) {
-        if (!source.gamepad) continue;
-        const ax = source.gamepad.axes;
-        const isL = source.handedness === 'left';
-
-        // Quest standard maps thumbsticks to axes 2 and 3. Fallback to 0 and 1.
-        if (isL && ax.length >= 2) {
-            const sx = ax.length >= 4 && Math.abs(ax[2]) > DEADZONE ? ax[2] : (Math.abs(ax[0]) > DEADZONE ? ax[0] : 0);
-            const sy = ax.length >= 4 && Math.abs(ax[3]) > DEADZONE ? ax[3] : (Math.abs(ax[1]) > DEADZONE ? ax[1] : 0);
-            
-            if (sx !== 0 || sy !== 0) {
-                // Get HMD forward
-                let hfx = -Math.sin(rigYaw), hfz = -Math.cos(rigYaw);
-                const vp = frame.getViewerPose(xrBaseSpace);
-                if (vp && vp.views[0]) {
-                    const vq = _q.setFromRotationMatrix(_m.fromArray(vp.views[0].transform.matrix));
-                    _v3.set(0, 0, -1).applyQuaternion(vq);
-                    _v3.y = 0; 
-                    _v3.normalize();
-                    hfx = _v3.x; 
-                    hfz = _v3.z;
-                }
-                const rx = -hfz, rz = hfx;
-                
-                // Convert stick to forward/strafe vectors
-                const mx = (hfx * -sy) + (rx * sx);
-                const mz = (hfz * -sy) + (rz * sx);
-                const ml = Math.sqrt(mx*mx + mz*mz) || 1;
-                
-                // Add momentum instead of locking velocity
-                player.vx += (mx / ml) * MOVE_SPEED * dt;
-                player.vz += (mz / ml) * MOVE_SPEED * dt;
-            } else if (player.y <= 0.6) {
-                // Apply ground friction only when stick is idle and player is touching ground
-                player.vx *= Math.pow(0.01, dt);
-                player.vz *= Math.pow(0.01, dt);
-            }
-        }
-        
-        if (!isL && ax.length >= 2) {
-            const tx = ax.length >= 4 && Math.abs(ax[2]) > DEADZONE ? ax[2] : (Math.abs(ax[0]) > DEADZONE ? ax[0] : 0);
-            if (tx !== 0) {
-                // FIX: Subtract tx so pushing right turns right
-                rigYaw -= tx * TURN_SPEED * dt; 
-                rig.quaternion.setFromAxisAngle(_up, rigYaw);
-            }
-        }
-    }
-
-    // Move rig to updated physics position
-    rig.position.set(player.x, player.y, player.z);
-}
-
-function updateDesktop(dt) {
-    rig.position.set(0,0,0);
-    rig.quaternion.identity();
-
-    camera.position.set(player.x, player.y, player.z);
-    camera.rotation.order = 'YXZ';
-    camera.rotation.set(dPitch, dYaw, 0);
-
-    const cosY=Math.cos(dYaw), sinY=Math.sin(dYaw);
-    let mx=0, mz=0;
-    if(keys['KeyW']) mz-=1;
-    if(keys['KeyS']) mz+=1;
-    if(keys['KeyA']) mx-=1;
-    if(keys['KeyD']) mx+=1;
-    if(mx||mz){
-        const rx=mx*cosY-mz*sinY, rz=mx*sinY+mz*cosY;
-        const l=Math.sqrt(rx*rx+rz*rz)||1;
-        player.vx=rx/l*MOVE_SPEED;
-        player.vz=rz/l*MOVE_SPEED;
-    } else {
-        player.vx*=0.88;
-        player.vz*=0.88;
-    }
-}
-
-// ===== START =====
-renderer.setAnimationLoop(animate);
-
-// VR button — never disable it; isSessionSupported lies on PCVR/Link
-const vrBtn = document.getElementById('vr-button');
-let vrReady = false;
-
-async function requestVR() {
-    vrBtn.textContent = 'Connecting...';
-    vrBtn.disabled = true;
-    try {
-        // Try local-floor first (best for room-scale)
-        let s = null;
-        try {
-            s = await navigator.xr.requestSession('immersive-vr', {
-                requiredFeatures: ['local-floor']
+            window.addEventListener('resize',()=>{
+                camera.aspect=window.innerWidth/window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth,window.innerHeight);
             });
-        } catch(_) {
-            // Fallback: viewer reference space (works on more PCVR setups)
-            s = await navigator.xr.requestSession('immersive-vr', {
-                requiredFeatures: ['viewer']
-            });
-        }
-        await startSession(s);
-        vrReady = true;
-        vrBtn.textContent = 'Exit VR';
-        vrBtn.onclick = () => s.end();
-    } catch(e) {
-        console.error('VR failed:', e);
-        const msg = e.message || String(e);
-        // Show useful diagnostics
-        if (msg.includes('NotSupportedError') || msg.includes('required features'))
-            setStatus('VR: no headset found. Use Quest standalone browser, or Chrome+Link on PC.');
-        else if (msg.includes('NotAllowedError') || msg.includes('permission'))
-            setStatus('VR: permission denied. Allow VR access in browser settings.');
-        else
-            setStatus('VR error: ' + msg.slice(0, 60));
-        vrBtn.textContent = 'Enter VR';
-        vrBtn.disabled = false;
-    }
-}
-vrBtn.addEventListener('click', requestVR);
 
-// Lightweight check — just update label, never block the button
-if (navigator.xr) {
-    navigator.xr.isSessionSupported('immersive-vr').then(ok => {
-        if (ok) {
-            vrBtn.textContent = 'Enter VR';
-            setStatus('VR detected');
-        } else {
-            // Don't disable! PCVR/Link often reports false but works
-            vrBtn.textContent = 'Enter VR (try)';
-            setStatus('VR not detected — click button to try anyway');
-        }
-    }).catch(() => {
-        vrBtn.textContent = 'Enter VR (try)';
-        setStatus('WebXR present — click button to attempt VR');
-    });
-} else {
-    vrBtn.textContent = 'No WebXR API';
-    vrBtn.disabled = true;
-    setStatus('Browser has no WebXR. Use Chrome/Edge on PC or Quest standalone browser.');
-}
+            // Defer chunk loading — first frame renders empty scene (instant VR entry)
 
-window.addEventListener('resize',()=>{
-    camera.aspect=window.innerWidth/window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth,window.innerHeight);
-});
-
-// Defer chunk loading — first frame renders empty scene (instant VR entry)
-
-// Hide loader once Three.js is ready
-const loader = document.getElementById('loader');
-if(loader) loader.style.display = 'none';
-setStatus('Ready');
-</script>
-</body>
+            // Hide loader once Three.js is ready
+            const loader = document.getElementById('loader');
+            if(loader) loader.style.display = 'none';
+            setStatus('Ready');
+        </script>
+    </body>
 </html>
