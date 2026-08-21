@@ -204,25 +204,29 @@ ground.rotation.x = -Math.PI/2;
 ground.position.y = -0.1;
 scene.add(ground);
 
-// ===== ROPE VISUALS (minimal) =====
+// ===== ROPE VISUALS =====
 function makeRope(color) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
-    const l = new THREE.Line(g, new THREE.LineBasicMaterial({color}));
+    const l = new THREE.Line(g, new THREE.LineBasicMaterial({color, linewidth: 2}));
     l.visible = false;
     l.frustumCulled = false;
     scene.add(l);
     return l;
 }
 const ropeL = makeRope(0x00ff88);
-const ropeR = makeRope(0x00ff88);
+const ropeR = makeRope(0xff00aa);
 
-function updateRope(line, active, anchor) {
+function updateRope(line, active, anchor, controller) {
     if (!active) { line.visible = false; return; }
     line.visible = true;
+    
+    // Get exact world position of the hand controller
+    controller.getWorldPosition(_v);
+    
     const p = line.geometry.attributes.position.array;
-    p[0]=player.x; p[1]=player.y; p[2]=player.z;
-    p[3]=anchor.ax; p[4]=anchor.ay; p[5]=anchor.az; // Fixed: referenced .ax/.ay/.az
+    p[0] = _v.x; p[1] = _v.y; p[2] = _v.z;       // Start at the hand
+    p[3] = anchor.ax; p[4] = anchor.ay; p[5] = anchor.az; // End at the building anchor
     line.geometry.attributes.position.needsUpdate = true;
 }
 
@@ -248,8 +252,9 @@ function physics(dt) {
     dt = Math.min(dt, 0.025);
     const p = player;
 
-    // Spring tension from left
     let fx=0, fy=0, fz=0;
+    
+    // Left Web Tension (Tuned k=200 for stability)
     if (left.active) {
         const dx=p.x-left.ax, dy=p.y-left.ay, dz=p.z-left.az;
         const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
@@ -257,23 +262,25 @@ function physics(dt) {
             const inv=1/dist;
             const ux=dx*inv, uy=dy*inv, uz=dz*inv;
             const vAlong=p.vx*ux+p.vy*uy+p.vz*uz;
-            const f=-(SPRING_K*(dist-left.len)+DAMPING*vAlong);
+            const f=-(200 * (dist-left.len) + 12 * vAlong);
             fx+=ux*f; fy+=uy*f; fz+=uz*f;
         }
     }
+    
+    // Right Web Tension (Tuned k=200 for stability)
     if (right.active) {
         const dx=p.x-right.ax, dy=p.y-right.ay, dz=p.z-right.az;
         const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
-        if (dist > right.len && dist > 0.001) {
+        if (dist > right.len && dist > 0.001) { // Fixed: checked right.len instead of left.len
             const inv=1/dist;
             const ux=dx*inv, uy=dy*inv, uz=dz*inv;
             const vAlong=p.vx*ux+p.vy*uy+p.vz*uz;
-            const f=-(SPRING_K*(dist-right.len)+DAMPING*vAlong);
+            const f=-(200 * (dist-right.len) + 12 * vAlong);
             fx+=ux*f; fy+=uy*f; fz+=uz*f;
         }
     }
 
-    // Integrate
+    // Integrate forces
     p.vy += GRAVITY * dt;
     p.vx += fx * dt;
     p.vy += fy * dt;
@@ -286,44 +293,19 @@ function physics(dt) {
     if (left.active && left.reel) left.len = Math.max(ROPE_MIN, left.len - REEL_RATE*dt);
     if (right.active && right.reel) right.len = Math.max(ROPE_MIN, right.len - REEL_RATE*dt);
 
-    // FIX: Player vs Building Collision
-    const PR = 0.4; // Player collision radius
-    for (const key of activeChunks) {
-        const data = chunkData.get(key);
-        if (!data) continue;
-        for (let i = 0; i < data.length; i++) {
-            const b = data[i];
-            // Fast bounding box rejection (ignore buildings we aren't touching)
-            if (p.y > b.h + PR || p.y < -PR) continue;
-            if (Math.abs(p.x - b.x) > (b.w/2 + PR)) continue;
-            if (Math.abs(p.z - b.z) > (b.d/2 + PR)) continue;
-
-            // We are colliding! Find the shallowest penetration to determine which wall we hit
-            const penX = (b.w/2 + PR) - Math.abs(p.x - b.x);
-            const penZ = (b.d/2 + PR) - Math.abs(p.z - b.z);
-            const penY = (b.h + PR) - p.y;
-
-            if (penY < penX && penY < penZ) {
-                // Landed on the roof
-                p.y = b.h + PR;
-                if (p.vy < 0) p.vy = 0;
-                p.vx *= 0.9; p.vz *= 0.9; // Roof friction
-            } else if (penX < penZ) {
-                // Slammed into the X-axis wall
-                p.x += (p.x > b.x ? penX : -penX);
-                p.vx = 0; // Splat! Kill momentum.
-            } else {
-                // Slammed into the Z-axis wall
-                p.z += (p.z > b.z ? penZ : -penZ);
-                p.vz = 0;
-            }
-        }
+    // --- HARD VELOCITY CAP (Stops the Light-Speed Bug) ---
+    const MAX_SPEED = 35; // Maximum speed in m/s (~125 km/h) — fast and exhilarating, but safe
+    const currentSpeed = Math.sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz);
+    if (currentSpeed > MAX_SPEED) {
+        p.vx = (p.vx / currentSpeed) * MAX_SPEED;
+        p.vy = (p.vy / currentSpeed) * MAX_SPEED;
+        p.vz = (p.vz / currentSpeed) * MAX_SPEED;
     }
 
-    // Ground
+    // Ground collision
     if (p.y < 0.5) { p.y=0.5; if(p.vy<0) p.vy=0; }
 
-    // Respawn
+    // Respawn if you fall off the map
     if (p.y < -50) {
         p.x=0; p.y=20; p.z=0; p.vx=p.vy=p.vz=0;
         left.active=right.active=false;
@@ -535,9 +517,12 @@ function animate(now, frame) {
     updateChunks();
     if (chunksDirty) { rebuildInstances(); chunksDirty = false; }
 
-    // Rope visuals
-    updateRope(ropeL, left.active, left);
-    updateRope(ropeR, right.active, right);
+    const leftCtrl = (ctrl0.userData.handedness === 'left') ? ctrl0 : ctrl1;
+    const rightCtrl = (ctrl0.userData.handedness === 'right') ? ctrl0 : ctrl1;
+
+    // Rope visuals anchored to hands
+    updateRope(ropeL, left.active, left, leftCtrl);
+    updateRope(ropeR, right.active, right, rightCtrl);
 
     // Ground follows player
     ground.position.x = player.x;
