@@ -262,12 +262,10 @@
                         const inv = 1 / dist;
                         const ux = dx * inv, uy = dy * inv, uz = dz * inv;
                         
-                        // 1. Hard position correction (keeps rope length constant)
                         p.x = left.ax + ux * left.len;
                         p.y = left.ay + uy * left.len;
                         p.z = left.az + uz * left.len;
                         
-                        // 2. Velocity projection: kill outward velocity, preserve tangent swing
                         const vAlong = p.vx * ux + p.vy * uy + p.vz * uz;
                         if (vAlong > 0) {
                             p.vx -= vAlong * ux;
@@ -285,12 +283,10 @@
                         const inv = 1 / dist;
                         const ux = dx * inv, uy = dy * inv, uz = dz * inv;
                         
-                        // 1. Hard position correction
                         p.x = right.ax + ux * right.len;
                         p.y = right.ay + uy * right.len;
                         p.z = right.az + uz * right.len;
                         
-                        // 2. Velocity projection
                         const vAlong = p.vx * ux + p.vy * uy + p.vz * uz;
                         if (vAlong > 0) {
                             p.vx -= vAlong * ux;
@@ -300,10 +296,42 @@
                     }
                 }
 
-                // Integrate final positions
+                // Integrate temporary positions
                 p.x += p.vx * dt;
                 p.y += p.vy * dt;
                 p.z += p.vz * dt;
+
+                // --- BUILDING COLLISIONS & ROOF LANDINGS ---
+                const pr = 0.4; // Player collision radius
+                for (const key of activeChunks) {
+                    const data = chunkData.get(key);
+                    if (!data) continue;
+                    for (let i = 0; i < data.length; i++) {
+                        const b = data[i];
+                        const minX = b.x - b.w/2 - pr, maxX = b.x + b.w/2 + pr;
+                        const minZ = b.z - b.d/2 - pr, maxZ = b.z + b.d/2 + pr;
+                        
+                        if (p.x > minX && p.x < maxX && p.z > minZ && p.z < maxZ && p.y < b.h + pr) {
+                            // If falling onto the roof from above
+                            if (p.vy < 0 && (p.y - p.vy * dt) >= b.h) {
+                                p.y = b.h + pr;
+                                p.vy = 0;
+                                p.vx *= 0.8; 
+                                p.vz *= 0.8;
+                            } else {
+                                // Wall collision: bounce slightly and push out
+                                const cx = b.x, cz = b.z;
+                                if (Math.abs(p.x - cx) / b.w > Math.abs(p.z - cz) / b.d) {
+                                    if (p.x > cx) { p.x = maxX; if(p.vx < 0) p.vx *= -0.3; }
+                                    else { p.x = minX; if(p.vx > 0) p.vx *= -0.3; }
+                                } else {
+                                    if (p.z > cz) { p.z = maxZ; if(p.vz < 0) p.vz *= -0.3; }
+                                    else { p.z = minZ; if(p.vz > 0) p.vz *= -0.3; }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Reel
                 if (left.active && left.reel) left.len = Math.max(ROPE_MIN, left.len - REEL_RATE*dt);
