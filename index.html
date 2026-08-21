@@ -75,8 +75,8 @@
             const CHUNK_N    = 5;            // 5x5 buildings per chunk
             const SPACING    = 12;           // world units between centers
             const CHUNK_W    = CHUNK_N * SPACING;  // 60
-            let   LOAD_DIST  = 0;            // Start with just spawn chunk, expand after first frames
-            const MAX_INST   = 200;          // max visible building instances
+            let   LOAD_DIST  = 2;            // Start with just spawn chunk, expand after first frames
+            const MAX_INST   = 600;          // max visible building instances
             const DENSITY    = 0.35;
             const MIN_H      = 8;
             const MAX_H      = 55;
@@ -93,11 +93,10 @@
             // ===== SCENE =====
             const scene = new THREE.Scene();
             scene.background = new THREE.Color(0x111122);
-            scene.fog = new THREE.Fog(0x111122, 40, 160);  // Linear fog, cheap
+            scene.fog = new THREE.Fog(0x111122, 60, 350);  // Linear fog, cheap
 
             // ===== CAMERA + RIG =====
-            // FIX: Changed near plane from 0.5 to 0.01 to stop hands from disappearing
-            const camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.01, 200);
+            const camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.01, 500);
             const rig = new THREE.Group();
             rig.add(camera);
             scene.add(rig);
