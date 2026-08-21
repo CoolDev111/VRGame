@@ -284,7 +284,7 @@ function physics(dt) {
     if (right.active && right.reel) right.len = Math.max(ROPE_MIN, right.len - REEL_RATE*dt);
 
     // Ground
-    if (p.y < 0.5) { p.y=0.5; if(p.vy<0) p.vy=0; p.vx*=0.9; p.vz*=0.9; }
+    if (p.y < 0.5) { p.y=0.5; if(p.vy<0) p.vy=0; }
 
     // Respawn
     if (p.y < -50) {
@@ -293,94 +293,49 @@ function physics(dt) {
     }
 }
 
-// ===== CONTROLLER VISUALS (children of rig) =====
+// ===== CONTROLLER VISUALS (Three.js Native) =====
+const ctrl0 = renderer.xr.getController(0);
+const ctrl1 = renderer.xr.getController(1);
+rig.add(ctrl0);
+rig.add(ctrl1);
+
+// Hand meshes
 const ctrlGeo = new THREE.BoxGeometry(0.04, 0.12, 0.06);
 const ctrlMatL = new THREE.MeshLambertMaterial({color:0x00ff66, emissive:0x005522});
-const ctrlMatR = new THREE.MeshLambertMaterial({color:0x00ff66, emissive:0x005522});
-const ctrlL = new THREE.Mesh(ctrlGeo, ctrlMatL);
-const ctrlR = new THREE.Mesh(ctrlGeo, ctrlMatR);
-ctrlL.visible = ctrlR.visible = false;
-ctrlL.frustumCulled = ctrlR.frustumCulled = false;
-rig.add(ctrlL);
-rig.add(ctrlR);
+const ctrlMatR = new THREE.MeshLambertMaterial({color:0xff00aa, emissive:0xaa0044});
+ctrl0.add(new THREE.Mesh(ctrlGeo, ctrlMatL));
+ctrl1.add(new THREE.Mesh(ctrlGeo, ctrlMatR));
 
-// Stored base-space poses
-const poseL = {x:0,y:0,z:0, qx:0,qy:0,qz:0,qw:1};
-const poseR = {x:0,y:0,z:0, qx:0,qy:0,qz:0,qw:1};
-
-// ===== XR STATE =====
-let xrSession = null;
-let xrBaseSpace = null;
-let isVR = false;
-let rigYaw = 0;
-let currentFrame = null;
-
-// ===== GRAPPLE HELPERS =====
-function attachGrapple(isLeft, hit) {
-    const dx=player.x-hit.point.x, dy=player.y-hit.point.y, dz=player.z-hit.point.z;
-    const dist = Math.sqrt(dx*dx+dy*dy+dz*dz);
-    const g = isLeft ? left : right;
-    g.active = true;
-    g.ax = hit.point.x; g.ay = hit.point.y; g.az = hit.point.z;
-    g.len = dist;
+// Laser pointers
+function makeLaser() {
+    const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1)]);
+    const mat = new THREE.LineBasicMaterial({color:0x00ffff, transparent:true, opacity:0.6});
+    return new THREE.Line(geo, mat);
 }
-
-function worldPosFromBase(bx, by, bz) {
-    const cosY = Math.cos(rigYaw), sinY = Math.sin(rigYaw);
-    return {
-        x: bx*cosY - bz*sinY + player.x,
-        y: by + player.y,
-        z: bx*sinY + bz*cosY + player.z
-    };
-}
-
-function worldDirFromBase(dx, dy, dz) {
-    const cosY = Math.cos(rigYaw), sinY = Math.sin(rigYaw);
-    return {
-        x: dx*cosY - dz*sinY,
-        y: dy,
-        z: dx*sinY + dz*cosY
-    };
-}
-
-function getGripWorld(inputSource) {
-    if (!currentFrame || !xrBaseSpace || !inputSource.gripSpace) return null;
-    const gp = currentFrame.getPose(inputSource.gripSpace, xrBaseSpace);
-    if (!gp) return null;
-    const m4 = _m.fromArray(gp.transform.matrix);
-    const pos = _v.setFromMatrixPosition(m4);
-    const quat = _q.setFromRotationMatrix(m4);
-    const fwd = _v3.set(0,0,-1).applyQuaternion(quat);
-    return { bx:pos.x, by:pos.y, bz:pos.z, fx:fwd.x, fy:fwd.y, fz:fwd.z };
-}
-
-function tryGrapple(isLeft, ox,oy,oz, dx,dy,dz) {
-    let hit = grappleRay(ox,oy,oz, dx,dy,dz);
-    if (!hit) {
-        // Try slightly downward
-        hit = grappleRay(ox,oy,oz, dx, dy-0.3, dz);
-    }
-    if (hit) attachGrapple(isLeft, hit);
-}
+const laser0 = makeLaser();
+const laser1 = makeLaser();
+ctrl0.add(laser0);
+ctrl1.add(laser1);
 
 // ===== XR EVENT HANDLERS =====
-function onGrappleStart(e) {
-    const src = e.inputSource;
-    if (!src.handedness || src.handedness==='none') return;
-    const isL = src.handedness==='left';
-    const grip = getGripWorld(src);
-    if (grip) {
-        const wp = worldPosFromBase(grip.bx, grip.by, grip.bz);
-        const wd = worldDirFromBase(grip.fx, grip.fy, grip.fz);
-        tryGrapple(isL, wp.x,wp.y,wp.z, wd.x,wd.y,wd.z);
-    }
+function onCtrlConnect(e) { this.userData.handedness = e.data.handedness; }
+function onCtrlGrapple() {
+    const isL = this.userData.handedness === 'left';
+    this.getWorldPosition(_v);
+    _v2.set(0, 0, -1).transformDirection(this.matrixWorld);
+    tryGrapple(isL, _v.x, _v.y, _v.z, _v2.x, _v2.y, _v2.z);
 }
-function onGrappleEnd(e) {
-    const isL = e.inputSource.handedness==='left';
-    (isL?left:right).active = false;
-}
-function onReelStart(e) { (e.inputSource.handedness==='left'?left:right).reel = true; }
-function onReelEnd(e) { (e.inputSource.handedness==='left'?left:right).reel = false; }
+function onCtrlGrappleEnd() { (this.userData.handedness === 'left' ? left : right).active = false; }
+function onCtrlReel() { (this.userData.handedness === 'left' ? left : right).reel = true; }
+function onCtrlReelEnd() { (this.userData.handedness === 'left' ? left : right).reel = false; }
+
+[ctrl0, ctrl1].forEach(c => {
+    c.addEventListener('connected', onCtrlConnect);
+    c.addEventListener('selectstart', onCtrlGrapple);
+    c.addEventListener('selectend', onCtrlGrappleEnd);
+    c.addEventListener('squeezestart', onCtrlReel);
+    c.addEventListener('squeezeend', onCtrlReelEnd);
+});
 
 // ===== SESSION =====
 async function startSession(session) {
@@ -529,69 +484,84 @@ function animate(now, frame) {
 }
 
 function updateVR(frame, dt) {
-    if (!frame.session || !frame.session.inputSources) return;
-    const sources = frame.session.inputSources;
+    const session = renderer.xr.getSession();
+    if (!session || !session.inputSources) return;
 
-    for (let i = 0; i < sources.length; i++) {
-        const src = sources[i];
-        if (!src.gripSpace) continue;
-        const gp = frame.getPose(src.gripSpace, xrBaseSpace);
-        if (!gp) continue;
+    // 1. Update Lasers visually
+    [ctrl0, ctrl1].forEach(c => {
+        if (!c.userData.handedness) return;
+        const isL = c.userData.handedness === 'left';
+        const state = isL ? left : right;
+        const laser = c.children[1]; // The laser line mesh
 
-        const m4 = _m.fromArray(gp.transform.matrix);
-        const pos = _v.setFromMatrixPosition(m4);
-        const quat = _q.setFromRotationMatrix(m4);
+        c.getWorldPosition(_v);
+        _v2.set(0, 0, -1).transformDirection(c.matrixWorld);
 
-        const isL = src.handedness === 'left';
-        const pose = isL ? poseL : poseR;
-        const ctrl = isL ? ctrlL : ctrlR;
-        pose.x=pos.x; pose.y=pos.y; pose.z=pos.z;
-        pose.qx=quat.x; pose.qy=quat.y; pose.qz=quat.z; pose.qw=quat.w;
-        ctrl.position.copy(pos);
-        ctrl.quaternion.copy(quat);
-
-        // Thumbstick input
-        if (src.gamepad && src.gamepad.axes.length >= 2) {
-            const ax = src.gamepad.axes;
-            if (isL && ax.length >= 2) {
-                // Movement
-                const sx = Math.abs(ax[0])>DEADZONE ? ax[0] : 0;
-                const sy = Math.abs(ax[1])>DEADZONE ? ax[1] : 0;
-                if (sx!==0||sy!==0) {
-                    // Get HMD forward
-                    let hfx=-Math.sin(rigYaw), hfz=-Math.cos(rigYaw);
-                    const vp = frame.getViewerPose(xrBaseSpace);
-                    if (vp && vp.views[0]) {
-                        const vm = _m.fromArray(vp.views[0].transform.matrix);
-                        const vq = _q.setFromRotationMatrix(vm);
-                        _v3.set(0,0,-1).applyQuaternion(vq);
-                        _v3.y=0; _v3.normalize();
-                        hfx=_v3.x; hfz=_v3.z;
-                    }
-                    // Right = cross(forward, up) = (-hfz, 0, hfx)
-                    const rx = -hfz, rz = hfx;
-                    const mx = hfx*(-sy) + rx*sx;
-                    const mz = hfz*(-sy) + rz*sx;
-                    const ml = Math.sqrt(mx*mx+mz*mz) || 1;
-                    player.vx = mx/ml * MOVE_SPEED;
-                    player.vz = mz/ml * MOVE_SPEED;
-                } else {
-                    player.vx *= 0.85;
-                    player.vz *= 0.85;
-                }
+        if (state.active) {
+            laser.visible = false; // Hide laser while swinging (the rope takes over)
+        } else {
+            laser.visible = true;
+            const hit = grappleRay(_v.x, _v.y, _v.z, _v2.x, _v2.y, _v2.z);
+            if (hit) {
+                laser.scale.z = hit.distance;
+                laser.material.color.setHex(isL ? 0x00ff66 : 0xff00aa);
+                laser.material.opacity = 0.8;
+            } else {
+                laser.scale.z = 80;
+                laser.material.color.setHex(0xff0000); // Red if pointing at sky
+                laser.material.opacity = 0.15;
             }
-            if (!isL && ax.length >= 4) {
-                // Right stick turning
-                const tx = Math.abs(ax[2])>DEADZONE ? ax[2] : 0;
-                if (tx!==0) {
-                    rigYaw += tx * TURN_SPEED * dt;
-                    rig.quaternion.setFromAxisAngle(_up, rigYaw);
+        }
+    });
+
+    // 2. Thumbstick Locomotion
+    for (const source of session.inputSources) {
+        if (!source.gamepad) continue;
+        const ax = source.gamepad.axes;
+        const isL = source.handedness === 'left';
+
+        // Quest standard maps thumbsticks to axes 2 and 3. Fallback to 0 and 1.
+        if (isL && ax.length >= 2) {
+            const sx = ax.length >= 4 && Math.abs(ax[2]) > DEADZONE ? ax[2] : (Math.abs(ax[0]) > DEADZONE ? ax[0] : 0);
+            const sy = ax.length >= 4 && Math.abs(ax[3]) > DEADZONE ? ax[3] : (Math.abs(ax[1]) > DEADZONE ? ax[1] : 0);
+            
+            if (sx !== 0 || sy !== 0) {
+                // Get HMD forward
+                let hfx = -Math.sin(rigYaw), hfz = -Math.cos(rigYaw);
+                const vp = frame.getViewerPose(xrBaseSpace);
+                if (vp && vp.views[0]) {
+                    const vq = _q.setFromRotationMatrix(_m.fromArray(vp.views[0].transform.matrix));
+                    _v3.set(0,0,-1).applyQuaternion(vq);
+                    hfx = _v3.x; hfz = _v3.z;
                 }
+                const rx = -hfz, rz = hfx;
+                
+                // Convert stick to forward/strafe vectors
+                const mx = (hfx * -sy) + (rx * sx);
+                const mz = (hfz * -sy) + (rz * sx);
+                const ml = Math.sqrt(mx*mx + mz*mz) || 1;
+                
+                // Add momentum instead of locking velocity
+                player.vx += (mx / ml) * MOVE_SPEED * dt;
+                player.vz += (mz / ml) * MOVE_SPEED * dt;
+            } else if (player.y <= 0.6) {
+                // Apply ground friction only when stick is idle and player is touching ground
+                player.vx *= Math.pow(0.01, dt);
+                player.vz *= Math.pow(0.01, dt);
+            }
+        }
+        
+        if (!isL && ax.length >= 2) {
+            const tx = ax.length >= 4 && Math.abs(ax[2]) > DEADZONE ? ax[2] : (Math.abs(ax[0]) > DEADZONE ? ax[0] : 0);
+            if (tx !== 0) {
+                // FIX: Subtract tx so pushing right turns right
+                rigYaw -= tx * TURN_SPEED * dt; 
+                rig.quaternion.setFromAxisAngle(_up, rigYaw);
             }
         }
     }
 
-    // Move rig to physics position
+    // Move rig to updated physics position
     rig.position.set(player.x, player.y, player.z);
 }
 
