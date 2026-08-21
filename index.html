@@ -252,39 +252,56 @@
                 dt = Math.min(dt, 0.025);
                 const p = player;
 
-                let fx=0, fy=0, fz=0;
-                
-                // Left Web Tension (Tuned k=200 for stability)
+                // Apply gravity first
+                p.vy += GRAVITY * dt;
+
+                // --- LEFT WEB PENDULUM CONSTRAINT ---
                 if (left.active) {
-                    const dx=p.x-left.ax, dy=p.y-left.ay, dz=p.z-left.az;
-                    const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
+                    const dx = p.x - left.ax, dy = p.y - left.ay, dz = p.z - left.az;
+                    const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
                     if (dist > left.len && dist > 0.001) {
-                        const inv=1/dist;
-                        const ux=dx*inv, uy=dy*inv, uz=dz*inv;
-                        const vAlong=p.vx*ux+p.vy*uy+p.vz*uz;
-                        const f=-(200 * (dist-left.len) + 12 * vAlong);
-                        fx+=ux*f; fy+=uy*f; fz+=uz*f;
+                        const inv = 1 / dist;
+                        const ux = dx * inv, uy = dy * inv, uz = dz * inv;
+                        
+                        // 1. Hard position correction (keeps rope length constant)
+                        p.x = left.ax + ux * left.len;
+                        p.y = left.ay + uy * left.len;
+                        p.z = left.az + uz * left.len;
+                        
+                        // 2. Velocity projection: kill outward velocity, preserve tangent swing
+                        const vAlong = p.vx * ux + p.vy * uy + p.vz * uz;
+                        if (vAlong > 0) {
+                            p.vx -= vAlong * ux;
+                            p.vy -= vAlong * uy;
+                            p.vz -= vAlong * uz;
+                        }
                     }
                 }
                 
-                // Right Web Tension (Tuned k=200 for stability)
+                // --- RIGHT WEB PENDULUM CONSTRAINT ---
                 if (right.active) {
-                    const dx=p.x-right.ax, dy=p.y-right.ay, dz=p.z-right.az;
-                    const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
-                    if (dist > right.len && dist > 0.001) { // Fixed: checked right.len instead of left.len
-                        const inv=1/dist;
-                        const ux=dx*inv, uy=dy*inv, uz=dz*inv;
-                        const vAlong=p.vx*ux+p.vy*uy+p.vz*uz;
-                        const f=-(200 * (dist-right.len) + 12 * vAlong);
-                        fx+=ux*f; fy+=uy*f; fz+=uz*f;
+                    const dx = p.x - right.ax, dy = p.y - right.ay, dz = p.z - right.az;
+                    const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                    if (dist > right.len && dist > 0.001) {
+                        const inv = 1 / dist;
+                        const ux = dx * inv, uy = dy * inv, uz = dz * inv;
+                        
+                        // 1. Hard position correction
+                        p.x = right.ax + ux * right.len;
+                        p.y = right.ay + uy * right.len;
+                        p.z = right.az + uz * right.len;
+                        
+                        // 2. Velocity projection
+                        const vAlong = p.vx * ux + p.vy * uy + p.vz * uz;
+                        if (vAlong > 0) {
+                            p.vx -= vAlong * ux;
+                            p.vy -= vAlong * uy;
+                            p.vz -= vAlong * uz;
+                        }
                     }
                 }
 
-                // Integrate forces
-                p.vy += GRAVITY * dt;
-                p.vx += fx * dt;
-                p.vy += fy * dt;
-                p.vz += fz * dt;
+                // Integrate final positions
                 p.x += p.vx * dt;
                 p.y += p.vy * dt;
                 p.z += p.vz * dt;
@@ -293,8 +310,8 @@
                 if (left.active && left.reel) left.len = Math.max(ROPE_MIN, left.len - REEL_RATE*dt);
                 if (right.active && right.reel) right.len = Math.max(ROPE_MIN, right.len - REEL_RATE*dt);
 
-                // --- HARD VELOCITY CAP (Stops the Light-Speed Bug) ---
-                const MAX_SPEED = 35; // Maximum speed in m/s (~125 km/h) — fast and exhilarating, but safe
+                // Hard Velocity Cap
+                const MAX_SPEED = 35;
                 const currentSpeed = Math.sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz);
                 if (currentSpeed > MAX_SPEED) {
                     p.vx = (p.vx / currentSpeed) * MAX_SPEED;
@@ -303,12 +320,13 @@
                 }
 
                 // Ground collision
-                if (p.y < 0.5) { p.y=0.5; if(p.vy<0) p.vy=0; }
+                if (p.y < 0.5) { p.y = 0.5; if(p.vy < 0) p.vy = 0; }
 
                 // Respawn if you fall off the map
                 if (p.y < -50) {
-                    p.x=0; p.y=20; p.z=0; p.vx=p.vy=p.vz=0;
-                    left.active=right.active=false;
+                    p.x = 0; p.y = 20; p.z = 0;
+                    p.vx = p.vy = p.vz = 0;
+                    left.active = right.active = false;
                 }
             }
 
