@@ -1,4 +1,4 @@
-!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -365,15 +365,19 @@ const ctrl1 = renderer.xr.getController(1);
 rig.add(ctrl0);
 rig.add(ctrl1);
 
-ctrl0.children[0].frustumCulled = false;
-ctrl1.children[0].frustumCulled = false;
-
 // Hand meshes
 const ctrlGeo = new THREE.BoxGeometry(0.04, 0.12, 0.06);
 const ctrlMatL = new THREE.MeshLambertMaterial({color:0x00ff66, emissive:0x005522});
 const ctrlMatR = new THREE.MeshLambertMaterial({color:0xff00aa, emissive:0xaa0044});
-ctrl0.add(new THREE.Mesh(ctrlGeo, ctrlMatL));
-ctrl1.add(new THREE.Mesh(ctrlGeo, ctrlMatR));
+const handL = new THREE.Mesh(ctrlGeo, ctrlMatL);
+const handR = new THREE.Mesh(ctrlGeo, ctrlMatR);
+
+// Stop the engine from culling the hands when they get close to your face
+handL.frustumCulled = false;
+handR.frustumCulled = false;
+
+ctrl0.add(handL);
+ctrl1.add(handR);
 
 // Laser pointers
 function makeLaser() {
@@ -412,40 +416,36 @@ async function startSession(session) {
     isVR = true;
     session.addEventListener('end', endSession);
 
-    // FIX: Remove the manual XRWebGLLayer creation. 
-    // Let Three.js automatically handle makeXRCompatible() and the baseLayer.
-    renderer.xr.setSession(session);
+    // FIX: Use the r128 compatible method to set the reference space type
+    renderer.xr.setReferenceSpaceType('local-floor');
+    await renderer.xr.setSession(session);
 
-    // Try local-floor first, fall back to viewer (some PCVR setups only support viewer)
+    // Keep our manual reference space purely for our custom raycasting math
     try {
         xrBaseSpace = await session.requestReferenceSpace('local-floor');
     } catch(_) {
         xrBaseSpace = await session.requestReferenceSpace('viewer');
     }
-    
-    // Pass the reference space to Three.js and keep a local copy for our custom grapple math
-    renderer.xr.setReferenceSpace(xrBaseSpace);
 
-    player.x=0; player.y=20; player.z=0;
-    player.vx=player.vy=player.vz=0;
-    left.active=right.active=false;
-    rigYaw=0;
+    // Reset player physics
+    player.x = 0; player.y = 20; player.z = 0;
+    player.vx = player.vy = player.vz = 0;
+    left.active = right.active = false;
+    rigYaw = 0;
     rig.quaternion.identity();
-    ctrlL.visible = ctrlR.visible = true;
 
-    session.addEventListener('selectstart', onGrappleStart);
-    session.addEventListener('selectend', onGrappleEnd);
-    session.addEventListener('squeezestart', onReelStart);
-    session.addEventListener('squeezeend', onReelEnd);
-
+    // Update HUD
     document.getElementById('controls-hint').textContent = 'L-stick move · R-stick turn · Triggers grapple · Grips reel';
     setStatus('VR Active');
 }
 
 function endSession() {
-    xrSession=null; xrBaseSpace=null; isVR=false;
-    ctrlL.visible=ctrlR.visible=false;
-    left.active=right.active=false;
+    xrSession = null; 
+    xrBaseSpace = null; 
+    isVR = false;
+    left.active = right.active = false;
+    
+    // Update HUD
     document.getElementById('controls-hint').textContent = 'WASD + mouse look (click) | Space/Enter grapple | Q/E reel';
     setStatus('Desktop');
     document.getElementById('vr-button').textContent = 'Enter VR';
