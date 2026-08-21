@@ -293,6 +293,30 @@ function physics(dt) {
     }
 }
 
+// ===== XR STATE & HELPERS (Restored) =====
+let xrSession = null;
+let xrBaseSpace = null;
+let isVR = false;
+let rigYaw = 0;
+let currentFrame = null;
+
+function attachGrapple(isLeft, hit) {
+    const dx = player.x - hit.point.x, dy = player.y - hit.point.y, dz = player.z - hit.point.z;
+    const g = isLeft ? left : right;
+    g.active = true;
+    g.ax = hit.point.x; g.ay = hit.point.y; g.az = hit.point.z;
+    g.len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+}
+
+function tryGrapple(isLeft, ox, oy, oz, dx, dy, dz) {
+    let hit = grappleRay(ox, oy, oz, dx, dy, dz);
+    if (!hit) {
+        // Try slightly downward if the first cast misses, making swinging more forgiving
+        hit = grappleRay(ox, oy, oz, dx, dy - 0.3, dz);
+    }
+    if (hit) attachGrapple(isLeft, hit);
+}
+
 // ===== CONTROLLER VISUALS (Three.js Native) =====
 const ctrl0 = renderer.xr.getController(0);
 const ctrl1 = renderer.xr.getController(1);
