@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -391,7 +391,12 @@ async function startSession(session) {
     const gl = renderer.getContext();
     const layer = new XRWebGLLayer(session, gl);
     await session.updateRenderState({baseLayer:layer});
-    xrBaseSpace = await session.requestReferenceSpace('local-floor');
+    // Try local-floor first, fall back to viewer (some PCVR setups only support viewer)
+    try {
+        xrBaseSpace = await session.requestReferenceSpace('local-floor');
+    } catch(_) {
+        xrBaseSpace = await session.requestReferenceSpace('viewer');
+    }
     renderer.xr.setReferenceSpace(xrBaseSpace);
     renderer.xr.setSession(session);
 
@@ -616,31 +621,65 @@ function updateDesktop(dt) {
 // ===== START =====
 renderer.setAnimationLoop(animate);
 
-// VR button
+// VR button — never disable it; isSessionSupported lies on PCVR/Link
 const vrBtn = document.getElementById('vr-button');
+let vrReady = false;
+
 async function requestVR() {
+    vrBtn.textContent = 'Connecting...';
+    vrBtn.disabled = true;
     try {
-        const s = await navigator.xr.requestSession('immersive-vr', {
-            requiredFeatures:['local-floor'],
-        });
+        // Try local-floor first (best for room-scale)
+        let s = null;
+        try {
+            s = await navigator.xr.requestSession('immersive-vr', {
+                requiredFeatures: ['local-floor']
+            });
+        } catch(_) {
+            // Fallback: viewer reference space (works on more PCVR setups)
+            s = await navigator.xr.requestSession('immersive-vr', {
+                requiredFeatures: ['viewer']
+            });
+        }
         await startSession(s);
+        vrReady = true;
         vrBtn.textContent = 'Exit VR';
         vrBtn.onclick = () => s.end();
     } catch(e) {
         console.error('VR failed:', e);
-        setStatus('VR unavailable');
+        const msg = e.message || String(e);
+        // Show useful diagnostics
+        if (msg.includes('NotSupportedError') || msg.includes('required features'))
+            setStatus('VR: no headset found. Use Quest standalone browser, or Chrome+Link on PC.');
+        else if (msg.includes('NotAllowedError') || msg.includes('permission'))
+            setStatus('VR: permission denied. Allow VR access in browser settings.');
+        else
+            setStatus('VR error: ' + msg.slice(0, 60));
+        vrBtn.textContent = 'Enter VR';
+        vrBtn.disabled = false;
     }
 }
 vrBtn.addEventListener('click', requestVR);
 
-if(navigator.xr){
-    navigator.xr.isSessionSupported('immersive-vr').then(ok=>{
-        if(!ok){vrBtn.textContent='VR N/A';vrBtn.disabled=true;setStatus('Desktop only')}
-    }).catch(()=>{
-        vrBtn.textContent='Enter VR (headset)';
+// Lightweight check — just update label, never block the button
+if (navigator.xr) {
+    navigator.xr.isSessionSupported('immersive-vr').then(ok => {
+        if (ok) {
+            vrBtn.textContent = 'Enter VR';
+            setStatus('VR detected');
+        } else {
+            // Don't disable! PCVR/Link often reports false but works
+            vrBtn.textContent = 'Enter VR (try)';
+            setStatus('VR not detected — click button to try anyway');
+        }
+    }).catch(() => {
+        vrBtn.textContent = 'Enter VR (try)';
+        setStatus('WebXR present — click button to attempt VR');
     });
 } else {
-    vrBtn.textContent='No WebXR'; vrBtn.disabled=true; setStatus('Desktop only');
+    vrBtn.textContent = 'No WebXR API';
+    vrBtn.disabled = true;
+    setStatus('Browser has no WebXR. Use Chrome/Edge on PC or Quest standalone browser.');
 }
 
 window.addEventListener('resize',()=>{
